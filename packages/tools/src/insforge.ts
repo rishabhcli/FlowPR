@@ -538,7 +538,23 @@ function throwIfError(error: unknown, operation: string): void {
     throw new Error(`${operation} failed: ${error.message}`);
   }
 
+  if (error && typeof error === 'object') {
+    const err = error as Record<string, unknown>;
+    const parts = [err.message, err.code, err.details, err.hint]
+      .filter((v) => typeof v === 'string' && v.length > 0);
+    const summary = parts.length > 0 ? parts.join(' | ') : safeJsonStringify(err);
+    throw new Error(`${operation} failed: ${summary}`);
+  }
+
   throw new Error(`${operation} failed: ${String(error)}`);
+}
+
+function safeJsonStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 function jsonRecord(value: unknown): JsonRecord {
@@ -1221,6 +1237,34 @@ export async function listPullRequests(runId: string): Promise<PullRequestRecord
   throwIfError(error, 'listPullRequests');
 
   return Array.isArray(data) ? data.map((row) => mapPullRequest(row as PullRequestRow)) : [];
+}
+
+export interface PullRequestUpdateInput {
+  status?: PullRequestStatus;
+  number?: number;
+  url?: string;
+  raw?: JsonRecord;
+}
+
+export async function updatePullRequest(id: string, input: PullRequestUpdateInput): Promise<PullRequestRecord> {
+  const update: Record<string, unknown> = {
+    updated_at: new Date().toISOString(),
+  };
+
+  if (input.status !== undefined) update.status = input.status;
+  if (input.number !== undefined) update.number = input.number;
+  if (input.url !== undefined) update.url = input.url;
+  if (input.raw !== undefined) update.raw = input.raw;
+
+  const client = await getInsForgeClient();
+  const { data, error } = await client.database
+    .from('pull_requests')
+    .update(update)
+    .eq('id', id)
+    .select('*');
+  throwIfError(error, 'updatePullRequest');
+
+  return mapPullRequest(firstRow<PullRequestRow>(data, 'updatePullRequest'));
 }
 
 export async function recordPolicyHit(input: PolicyHitInput): Promise<PolicyHit> {

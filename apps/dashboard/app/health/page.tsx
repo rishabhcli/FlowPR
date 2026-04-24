@@ -6,10 +6,13 @@ import {
   Activity,
   AlertTriangle,
   Box,
+  CheckCheck,
+  CircleX,
   Cloud,
   Clock,
   Cpu,
   Database,
+  Gauge,
   Github,
   Loader2,
   Network,
@@ -18,6 +21,7 @@ import {
   Rocket,
   ShieldCheck,
   Siren,
+  Timer,
   Workflow,
 } from 'lucide-react';
 
@@ -29,8 +33,11 @@ import { MetricTile } from '@/components/flowpr/metric-tile';
 import { StateBadge } from '@/components/flowpr/state-badge';
 import { SponsorRail, type SponsorStatus } from '@/components/flowpr/sponsor-rail';
 import { GitHubConnectionPanel } from '@/components/flowpr/github-connection-panel';
+import { ActivityFeed } from '@/components/flowpr/activity-feed';
 import { cn } from '@/lib/utils';
 import { formatRelativeTime } from '@/lib/format';
+import { formatDurationShort } from '@/lib/phase-durations';
+import { useObservabilitySummary } from '@/lib/use-observability';
 
 type EnvState = 'configured' | 'missing' | 'partial' | 'local_artifact';
 
@@ -158,6 +165,7 @@ export default function HealthPage() {
   const [workers, setWorkers] = useState<WorkerStatusResponse | null>(null);
   const [deadLetter, setDeadLetter] = useState<DeadLetterResponse | null>(null);
   const [error, setError] = useState<string>();
+  const observability = useObservabilitySummary({ intervalMs: 10000 });
 
   async function load() {
     setError(undefined);
@@ -268,6 +276,80 @@ export default function HealthPage() {
 
           {data && (
             <>
+              <section className="mb-6">
+                <Card>
+                  <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0 pb-3">
+                    <div>
+                      <CardTitle className="text-sm uppercase tracking-wide text-muted-foreground">
+                        Run throughput · last 24h
+                      </CardTitle>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        How the autonomous loop has performed since this time yesterday.
+                      </p>
+                    </div>
+                    {observability.data?.runs.error && (
+                      <span className="rounded-full border border-warning/40 bg-warning/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-warning">
+                        partial data
+                      </span>
+                    )}
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                      <MetricTile
+                        label="Runs / 24h"
+                        value={observability.data?.runs.total24h ?? 0}
+                        tone="info"
+                        icon={<Gauge className="h-4 w-4" />}
+                        caption={
+                          observability.data
+                            ? `${observability.data.runs.active} active · ${observability.data.runs.queued} queued`
+                            : 'awaiting data'
+                        }
+                      />
+                      <MetricTile
+                        label="Done"
+                        value={observability.data?.runs.done24h ?? 0}
+                        tone="success"
+                        icon={<CheckCheck className="h-4 w-4" />}
+                        caption={
+                          observability.data?.runs.successRate24h != null
+                            ? `${Math.round(observability.data.runs.successRate24h * 100)}% success rate`
+                            : 'no completed runs yet'
+                        }
+                      />
+                      <MetricTile
+                        label="Failed"
+                        value={observability.data?.runs.failed24h ?? 0}
+                        tone={
+                          (observability.data?.runs.failed24h ?? 0) > 0
+                            ? 'danger'
+                            : 'muted'
+                        }
+                        icon={<CircleX className="h-4 w-4" />}
+                        caption={
+                          (observability.data?.runs.failed24h ?? 0) > 0
+                            ? 'review the dead-letter queue'
+                            : 'no failed runs'
+                        }
+                      />
+                      <MetricTile
+                        label="Mean duration"
+                        value={
+                          observability.data?.runs.meanDurationMs != null
+                            ? formatDurationShort(
+                                observability.data.runs.meanDurationMs,
+                              )
+                            : '—'
+                        }
+                        tone="info"
+                        icon={<Timer className="h-4 w-4" />}
+                        caption="successful runs only"
+                      />
+                    </div>
+                  </CardContent>
+                </Card>
+              </section>
+
               <section className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
                 <MetricTile
                   label="Core ready"
@@ -494,6 +576,14 @@ export default function HealthPage() {
                   </CardContent>
                 </Card>
               </div>
+
+              <section className="mt-6">
+                <ActivityFeed
+                  title="Live event tail"
+                  subtitle="Latest worker, browser, and provider events across recent runs."
+                  height={320}
+                />
+              </section>
             </>
           )}
         </div>

@@ -8,14 +8,8 @@ import {
   CircleDashed,
   CircleDot,
   Film,
-  GitBranch,
 } from 'lucide-react';
 import type { FlowPrRun, RunDetail, RunStatus } from '@flowpr/schemas';
-import {
-  labelRunStatus,
-  labelRiskLevel,
-  labelVerificationStatus,
-} from '@flowpr/schemas';
 
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -23,20 +17,14 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 
 import { SiteHeader } from '@/components/flowpr/site-header';
-import { PhaseStepper } from '@/components/flowpr/phase-stepper';
-import { BeforeAfter } from '@/components/flowpr/before-after';
-import { artifactSrc } from '@/lib/artifact-url';
-import { DiagnosisCard } from '@/components/flowpr/diagnosis-card';
-import { PatchCard } from '@/components/flowpr/patch-card';
-import { PrCard } from '@/components/flowpr/pr-card';
+import { RunPulse } from '@/components/flowpr/run-pulse';
 import { Timeline } from '@/components/flowpr/timeline';
 import {
   ReadinessMeter,
   type ReadinessSummary,
 } from '@/components/flowpr/readiness-meter';
-import { StateBadge } from '@/components/flowpr/state-badge';
+import { useRunStream } from '@/lib/use-run-stream';
 import { cn } from '@/lib/utils';
-import { formatTime } from '@/lib/format';
 
 interface ReadinessResponse extends ReadinessSummary {
   runId: string;
@@ -111,18 +99,7 @@ export default function DemoPage() {
     return () => window.clearInterval(interval);
   }, []);
 
-  const latestPR = detail?.pullRequests[detail.pullRequests.length - 1];
-  const latestPatch = detail?.patches[detail.patches.length - 1];
-  const latestHypothesis = detail?.bugHypotheses[detail.bugHypotheses.length - 1];
-  const beforeObservation = detail?.browserObservations.find(
-    (obs) => obs.status === 'failed' || obs.status === 'errored',
-  );
-  const afterObservation = detail?.browserObservations.find(
-    (obs) => obs.status === 'passed',
-  );
-  const liveVerification = detail?.verificationResults.find(
-    (result) => result.provider === 'tinyfish-live',
-  );
+  const runStream = useRunStream(detail?.run.id);
 
   const currentPhaseIndex = useMemo(() => {
     if (!detail) return -1;
@@ -133,37 +110,22 @@ export default function DemoPage() {
     <>
       <SiteHeader />
       <main className="relative">
-        <div className="absolute inset-x-0 top-0 -z-10 h-[360px] bg-radial-spot opacity-80" />
-        <div className="absolute inset-x-0 top-0 -z-10 h-[360px] bg-grid opacity-[0.18]" />
+        <div className="absolute inset-x-0 top-0 -z-10 h-[280px] bg-radial-spot opacity-70" />
 
-        <div className="mx-auto max-w-7xl px-6 py-10">
-          <section className="mb-8 flex flex-wrap items-end justify-between gap-6">
+        <div className="mx-auto max-w-7xl px-6 py-8">
+          <section className="mb-6 flex flex-wrap items-end justify-between gap-4">
             <div>
-              <p className="mb-3 inline-flex items-center gap-2 rounded-full border border-border bg-card/60 px-3 py-1 text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
+              <p className="mb-2 inline-flex items-center gap-2 rounded-full border border-border bg-card/60 px-3 py-1 text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
                 <Film className="h-3 w-3 text-primary" /> Demo · Presenter view
               </p>
-              <h1 className="font-display text-balance text-4xl font-semibold leading-[1.05] tracking-tight sm:text-5xl">
+              <h1 className="font-display text-balance text-3xl font-semibold leading-tight tracking-tight sm:text-4xl">
                 Autonomous browser QA, on the record.
               </h1>
-              <p className="mt-3 max-w-2xl text-muted-foreground">
+              <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
                 Three-minute walkthrough. Every tile is driven by real run state —
                 browser evidence, patch, PR, and verification.
               </p>
             </div>
-            {detail && (
-              <div className="flex flex-col items-end gap-2">
-                <div className="flex gap-2">
-                  <StateBadge state={detail.run.status} label={labelRunStatus(detail.run.status)} />
-                  <StateBadge state={detail.run.riskLevel} label={labelRiskLevel(detail.run.riskLevel)} />
-                </div>
-                <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                  <GitBranch className="h-3 w-3" />
-                  <span className="font-mono">
-                    {detail.run.owner}/{detail.run.repo}
-                  </span>
-                </div>
-              </div>
-            )}
           </section>
 
           {error && (
@@ -193,79 +155,12 @@ export default function DemoPage() {
           {detail && (
             <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
               <div className="space-y-6">
-                <Card className="overflow-hidden">
-                  <CardHeader className="space-y-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="text-[11px] uppercase tracking-widest text-muted-foreground">
-                          Live flow
-                        </p>
-                        <CardTitle className="mt-1 text-balance text-xl leading-snug">
-                          {detail.run.flowGoal}
-                        </CardTitle>
-                      </div>
-                      <span className="text-[11px] text-muted-foreground">
-                        Updated {formatTime(detail.run.updatedAt)}
-                      </span>
-                    </div>
-                    <PhaseStepper current={detail.run.status} variant="large" />
-                  </CardHeader>
-                  <CardContent>
-                    <BeforeAfter
-                      before={(() => {
-                        if (!beforeObservation) return null;
-                        const src = artifactSrc(detail.run.id, {
-                          key: beforeObservation.screenshotKey,
-                          url: beforeObservation.screenshotUrl,
-                        });
-                        return src
-                          ? {
-                              url: src,
-                              caption: beforeObservation.failedStep ?? 'Failure',
-                            }
-                          : null;
-                      })()}
-                      after={(() => {
-                        if (!afterObservation) return null;
-                        const src = artifactSrc(detail.run.id, {
-                          key: afterObservation.screenshotKey,
-                          url: afterObservation.screenshotUrl,
-                        });
-                        return src ? { url: src, caption: 'Verified fix' } : null;
-                      })()}
-                    />
-                  </CardContent>
-                </Card>
-
-                <div className="grid gap-4 md:grid-cols-3">
-                  <DiagnosisCard hypothesis={latestHypothesis} />
-                  <PatchCard patch={latestPatch} />
-                  <PrCard pullRequest={latestPR} />
-                </div>
-
-                {liveVerification && (
-                  <Card className="border-success/30 bg-success/5">
-                    <CardHeader className="pb-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                          TinyFish live re-verification
-                        </p>
-                        <StateBadge
-                          state={liveVerification.status}
-                          label={labelVerificationStatus(liveVerification.status)}
-                        />
-                      </div>
-                    </CardHeader>
-                    <CardContent>
-                      <p className="text-sm text-foreground">{liveVerification.summary}</p>
-                      {liveVerification.testCommand && (
-                        <p className="mt-2 truncate font-mono text-[11px] text-muted-foreground">
-                          $ {liveVerification.testCommand}
-                        </p>
-                      )}
-                    </CardContent>
-                  </Card>
-                )}
+                <RunPulse
+                  detail={detail}
+                  progress={runStream.progress}
+                  liveStreams={runStream.liveStreams}
+                  connected={runStream.connected}
+                />
 
                 <Card>
                   <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">

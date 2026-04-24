@@ -356,3 +356,109 @@ export async function getBranchRef(input: { owner: string; repo: string; branch:
   const body = await parseGitHubJson<GitHubRefResponse>(response, 'getBranchRef');
   return { ref: body.ref, sha: body.object.sha };
 }
+
+export interface MergePullRequestInput {
+  owner: string;
+  repo: string;
+  pullNumber: number;
+  mergeMethod?: 'merge' | 'squash' | 'rebase';
+  commitTitle?: string;
+  commitMessage?: string;
+  sha?: string;
+}
+
+export interface MergePullRequestResult {
+  merged: boolean;
+  sha?: string;
+  message: string;
+}
+
+interface GitHubMergeResponse {
+  merged?: boolean;
+  sha?: string;
+  message?: string;
+}
+
+export async function mergeGitHubPullRequest(input: MergePullRequestInput): Promise<MergePullRequestResult> {
+  loadLocalEnv();
+  const headers = await githubHeaders(input);
+
+  if (!headers.Authorization) {
+    throw new Error('GitHub credentials are required to merge a pull request');
+  }
+
+  const response = await fetch(
+    `https://api.github.com/repos/${input.owner}/${input.repo}/pulls/${input.pullNumber}/merge`,
+    {
+      method: 'PUT',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        commit_title: input.commitTitle,
+        commit_message: input.commitMessage,
+        sha: input.sha,
+        merge_method: input.mergeMethod ?? 'squash',
+      }),
+    },
+  );
+  const body = await parseGitHubJson<GitHubMergeResponse>(response, 'mergeGitHubPullRequest');
+
+  return {
+    merged: Boolean(body.merged),
+    sha: body.sha,
+    message: body.message ?? 'Pull request merged.',
+  };
+}
+
+export interface GetPullRequestInput {
+  owner: string;
+  repo: string;
+  pullNumber: number;
+}
+
+export interface GitHubPullRequestStatus {
+  number: number;
+  url: string;
+  state: 'open' | 'closed';
+  merged: boolean;
+  mergeable: boolean | null;
+  mergeableState?: string;
+  draft: boolean;
+  headSha: string;
+  baseBranch: string;
+  branchName: string;
+}
+
+interface GitHubPullRequestStatusResponse {
+  number: number;
+  html_url: string;
+  state: 'open' | 'closed';
+  merged: boolean;
+  mergeable: boolean | null;
+  mergeable_state?: string;
+  draft: boolean;
+  head: { sha: string; ref: string };
+  base: { ref: string };
+  title: string;
+  message?: string;
+}
+
+export async function getGitHubPullRequest(input: GetPullRequestInput): Promise<GitHubPullRequestStatus> {
+  const response = await fetch(
+    `https://api.github.com/repos/${input.owner}/${input.repo}/pulls/${input.pullNumber}`,
+    { headers: await githubHeaders(input) },
+  );
+  const body = await parseGitHubJson<GitHubPullRequestStatusResponse>(response, 'getGitHubPullRequest');
+
+  return {
+    number: body.number,
+    url: body.html_url,
+    state: body.state,
+    merged: Boolean(body.merged),
+    mergeable: body.mergeable,
+    mergeableState: body.mergeable_state,
+    draft: Boolean(body.draft),
+    headSha: body.head?.sha,
+    baseBranch: body.base?.ref,
+    branchName: body.head?.ref,
+  };
+}

@@ -67,6 +67,12 @@ import {
   type TriageOutput,
 } from './agents/visual-triage';
 import { generateDemoCookieBannerPatch } from './agents/patcher';
+import {
+  generateLlmPatch,
+  isLlmPatcherAvailable,
+  LlmPatchProposalError,
+  LlmPatcherUnavailableError,
+} from './agents/llm-patcher';
 import { runLocalVerification } from './agents/verifier';
 import { createPullRequestForRun } from './agents/pr-writer';
 import { runLiveVerification } from './agents/live-verifier';
@@ -1409,13 +1415,48 @@ async function handlePatchingCode(redis: RedisClientType, run: FlowPrRun, event:
 
     const patchStart = Date.now();
     const githubAuthToken = await getGitHubAuthToken({ owner: run.owner, repo: run.repo });
-    const patchResult = await generateDemoCookieBannerPatch({
-      runId: run.id,
-      repoUrl: run.repoUrl,
-      baseBranch: run.baseBranch,
-      triage,
-      authToken: githubAuthToken,
-    });
+    const llmAvailable = isLlmPatcherAvailable();
+    let patchProvider: 'anthropic' | 'demo' = 'demo';
+    let llmFallbackReason: string | undefined;
+    let patchResult: Awaited<ReturnType<typeof generateDemoCookieBannerPatch>>;
+
+    if (llmAvailable) {
+      try {
+        patchResult = await generateLlmPatch({
+          runId: run.id,
+          repoUrl: run.repoUrl,
+          baseBranch: run.baseBranch,
+          triage,
+          flowGoal: run.flowGoal,
+          authToken: githubAuthToken,
+        });
+        patchProvider = 'anthropic';
+      } catch (error) {
+        if (error instanceof LlmPatcherUnavailableError || error instanceof LlmPatchProposalError) {
+          llmFallbackReason = error.message;
+          console.warn(`[flowpr] LLM patcher fell back to demo patcher: ${error.message}`);
+          patchResult = await generateDemoCookieBannerPatch({
+            runId: run.id,
+            repoUrl: run.repoUrl,
+            baseBranch: run.baseBranch,
+            triage,
+            authToken: githubAuthToken,
+          });
+          patchProvider = 'demo';
+        } else {
+          throw error;
+        }
+      }
+    } else {
+      patchResult = await generateDemoCookieBannerPatch({
+        runId: run.id,
+        repoUrl: run.repoUrl,
+        baseBranch: run.baseBranch,
+        triage,
+        authToken: githubAuthToken,
+      });
+      patchProvider = 'demo';
+    }
 
     await recordToolCall({
       sessionId,
@@ -1424,7 +1465,7 @@ async function handlePatchingCode(redis: RedisClientType, run: FlowPrRun, event:
       status: 'succeeded',
       durationMs: Date.now() - patchStart,
       artifactId: patchResult.commitSha,
-      metadata: { branch: patchResult.plan.branchName },
+      metadata: { branch: patchResult.plan.branchName, patcher: patchProvider, fallbackReason: llmFallbackReason },
     });
 
     const { result: patchRecord, artifact: wgArtifact } = await executeSafeOperation({
@@ -1473,13 +1514,37 @@ async function handlePatchingCode(redis: RedisClientType, run: FlowPrRun, event:
         branch: patchResult.plan.branchName,
         baseBranch: run.baseBranch,
         filesChanged: patchResult.filesChanged,
+        patcher: patchProvider,
       },
       responseSummary: {
         diffStat: patchResult.diffStat,
         commitSha: patchResult.commitSha,
+        patcher: patchProvider,
       },
-      raw: { plan: patchResult.plan },
+      raw: { plan: patchResult.plan, patcher: patchProvider, llmFallbackReason },
     });
+
+    if (patchProvider === 'anthropic') {
+      await recordProviderArtifact({
+        runId: run.id,
+        sponsor: 'guildai',
+        artifactType: 'llm_patch_proposal',
+        providerId: patchResult.commitSha,
+        requestSummary: {
+          model: 'claude-sonnet-4-6',
+          flowGoal: run.flowGoal,
+          bugType: hypothesis.evidence
+            ? ((hypothesis.evidence as Record<string, unknown>).bugType as string | undefined) ?? 'unknown'
+            : 'unknown',
+        },
+        responseSummary: {
+          branchName: patchResult.plan.branchName,
+          filesChanged: patchResult.filesChanged.length,
+          explanation: patchResult.plan.explanation,
+        },
+        raw: { plan: patchResult.plan, llmFallbackReason, vendor: 'anthropic' },
+      });
+    }
 
     const patchStreamId = await emitPatchResult(redis, {
       runId: run.id,
@@ -1505,12 +1570,22 @@ async function handlePatchingCode(redis: RedisClientType, run: FlowPrRun, event:
       },
     });
 
-    await appendRedisTimeline(event, 'patching_code', 'completed', `Prepared a focused patch on branch ${patchResult.plan.branchName}.`, {
-      lockKey,
-      branchName: patchResult.plan.branchName,
-      commitSha: patchResult.commitSha,
-      filesChanged: patchResult.filesChanged,
-    });
+    await appendRedisTimeline(
+      event,
+      'patching_code',
+      'completed',
+      patchProvider === 'anthropic'
+        ? `Claude Sonnet drafted a focused patch on branch ${patchResult.plan.branchName}.`
+        : `Prepared a focused patch on branch ${patchResult.plan.branchName}.`,
+      {
+        lockKey,
+        branchName: patchResult.plan.branchName,
+        commitSha: patchResult.commitSha,
+        filesChanged: patchResult.filesChanged,
+        patcher: patchProvider,
+        llmFallbackReason,
+      },
+    );
 
     await persistRedisState(redis, event, 'patching_code', {
       patchStreamId,

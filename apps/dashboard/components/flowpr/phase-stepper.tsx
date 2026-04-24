@@ -5,6 +5,10 @@ import type { RunStatus } from '@flowpr/schemas';
 import { labelRunStatus, runStatuses, describeRunStatus } from '@flowpr/schemas';
 
 import { cn } from '@/lib/utils';
+import {
+  formatDurationShort,
+  type PhaseTimings,
+} from '@/lib/phase-durations';
 
 const phases = runStatuses.filter((status) => status !== 'failed');
 
@@ -12,9 +16,15 @@ interface PhaseStepperProps {
   current: RunStatus;
   variant?: 'large' | 'compact';
   className?: string;
+  durations?: Map<string, PhaseTimings>;
 }
 
-export function PhaseStepper({ current, variant = 'large', className }: PhaseStepperProps) {
+export function PhaseStepper({
+  current,
+  variant = 'large',
+  className,
+  durations,
+}: PhaseStepperProps) {
   const failed = current === 'failed';
   const currentIndex = failed ? phases.length - 1 : phases.indexOf(current);
   const progressPercent =
@@ -81,12 +91,21 @@ export function PhaseStepper({ current, variant = 'large', className }: PhaseSte
             const isCurrent = !failed && index === currentIndex;
             const isFuture = !failed && index > currentIndex;
             const isFailedHere = failed && index === currentIndex;
+            const timing = durations?.get(phase);
+            const showDuration =
+              (done || isCurrent || isFailedHere) &&
+              typeof timing?.durationMs === 'number' &&
+              timing.durationMs > 250;
 
             return (
               <li
                 key={phase}
                 className="group flex flex-col items-center gap-2"
-                title={labelRunStatus(phase)}
+                title={
+                  showDuration
+                    ? `${labelRunStatus(phase)} · ${formatDurationShort(timing?.durationMs)}`
+                    : labelRunStatus(phase)
+                }
               >
                 <span
                   className={cn(
@@ -114,6 +133,16 @@ export function PhaseStepper({ current, variant = 'large', className }: PhaseSte
                 >
                   {labelRunStatus(phase)}
                 </span>
+                {showDuration && (
+                  <span
+                    className={cn(
+                      'hidden font-mono text-[10px] tabular-nums lg:block',
+                      isCurrent ? 'text-primary' : 'text-muted-foreground/70',
+                    )}
+                  >
+                    {formatDurationShort(timing?.durationMs)}
+                  </span>
+                )}
               </li>
             );
           })}

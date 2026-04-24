@@ -46,7 +46,10 @@ export interface GitHubConnectionStatus {
   repositoryAccess: 'ready' | 'setup_needed';
   connectionStore: 'ready' | 'setup_needed';
   connectionCount?: number;
-  latestConnection?: Pick<GitHubConnection, 'state' | 'updatedAt'>;
+  latestConnection?: Pick<
+    GitHubConnection,
+    'state' | 'updatedAt' | 'githubLogin' | 'githubAvatarUrl'
+  >;
   startUrl: string;
   summaries: {
     authProvider: string;
@@ -208,6 +211,26 @@ export async function completeGitHubOAuth(input: {
   return rowToConnection(connection);
 }
 
+export async function getGitHubConnectionForUser(
+  userId: string,
+): Promise<GitHubConnection | null> {
+  loadLocalEnv();
+  if (!userId.trim()) return null;
+  const client = await getInsForgeClient();
+  const { data, error } = await client.database
+    .from('github_connections')
+    .select('*')
+    .eq('insforge_user_id', userId)
+    .eq('provider', 'github')
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  if (!data) return null;
+  return rowToConnection(data as GitHubConnectionRow);
+}
+
 export async function getGitHubConnectionStatus(): Promise<GitHubConnectionStatus> {
   loadLocalEnv();
   const client = await getInsForgeClient();
@@ -217,7 +240,10 @@ export async function getGitHubConnectionStatus(): Promise<GitHubConnectionStatu
 
   const { data, error, count } = await client.database
     .from('github_connections')
-    .select('id, connection_state, updated_at', { count: 'exact' })
+    .select(
+      'id, connection_state, updated_at, github_login, github_avatar_url',
+      { count: 'exact' },
+    )
     .order('updated_at', { ascending: false })
     .limit(1);
 
@@ -226,12 +252,19 @@ export async function getGitHubConnectionStatus(): Promise<GitHubConnectionStatu
   } else {
     connectionCount = typeof count === 'number' ? count : undefined;
     const [latest] = Array.isArray(data)
-      ? (data as Array<{ connection_state: string; updated_at: string }>)
+      ? (data as Array<{
+          connection_state: string;
+          updated_at: string;
+          github_login: string | null;
+          github_avatar_url: string | null;
+        }>)
       : [];
     if (latest) {
       latestConnection = {
         state: latest.connection_state,
         updatedAt: latest.updated_at,
+        githubLogin: latest.github_login ?? undefined,
+        githubAvatarUrl: latest.github_avatar_url ?? undefined,
       };
     }
   }

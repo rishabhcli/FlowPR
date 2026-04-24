@@ -58,13 +58,13 @@ export async function GET(request: Request) {
   }
 
   try {
-    await completeGitHubOAuth({
+    const connection = await completeGitHubOAuth({
       code,
       codeVerifier: decodeURIComponent(verifier),
     });
     const response = NextResponse.redirect(getRedirectUrl(request, 'connected'));
     clearOAuthCookies(response);
-    response.cookies.set('flowpr_session', 'connected', {
+    response.cookies.set('flowpr_session', connection.userId, {
       httpOnly: true,
       maxAge: 60 * 60 * 24 * 30,
       path: '/',

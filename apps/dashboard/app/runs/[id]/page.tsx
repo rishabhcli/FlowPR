@@ -1,11 +1,12 @@
 'use client';
 
 import Link from 'next/link';
-import { use, useEffect, useState } from 'react';
+import { use, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
   ArrowUpRight,
+  Clock,
   GitBranch,
   Loader2,
   RefreshCw,
@@ -38,8 +39,11 @@ import {
   type ReadinessSummary,
 } from '@/components/flowpr/readiness-meter';
 import { StateBadge } from '@/components/flowpr/state-badge';
-import { WorkerStatusNotice } from '@/components/flowpr/worker-status-notice';
 import { formatDateTime, formatTime } from '@/lib/format';
+import {
+  computePhaseDurations,
+  formatDurationShort,
+} from '@/lib/phase-durations';
 
 interface ReadinessResponse extends ReadinessSummary {
   runId: string;
@@ -105,7 +109,6 @@ export default function RunDetailPage({
     load().catch((err: unknown) =>
       setError(err instanceof Error ? err.message : String(err)),
     );
-    // SSE stream handles most updates; keep a low-cadence poll as a safety net.
     const interval = window.setInterval(() => {
       load().catch(() => undefined);
     }, 20000);
@@ -114,13 +117,15 @@ export default function RunDetailPage({
 
   const runStream = useRunStream(id);
 
-  // Any progress event coming in via SSE is a signal to refresh the detail snapshot.
   useEffect(() => {
     if (runStream.progress.length === 0) return;
     load().catch(() => undefined);
-    // We depend only on the length, not the full array, to avoid running on every new event.
-
   }, [runStream.progress.length]);
+
+  const durations = useMemo(
+    () => computePhaseDurations(detail?.timelineEvents ?? []),
+    [detail?.timelineEvents],
+  );
 
   if (error) {
     return (
@@ -175,6 +180,11 @@ export default function RunDetailPage({
     (result) => result.provider === 'local',
   );
 
+  const elapsedMs = run.startedAt
+    ? (run.completedAt ? new Date(run.completedAt).getTime() : Date.now()) -
+      new Date(run.startedAt).getTime()
+    : 0;
+
   return (
     <>
       <SiteHeader />
@@ -208,6 +218,14 @@ export default function RunDetailPage({
                     <>
                       <span>·</span>
                       <span>Completed {formatDateTime(run.completedAt)}</span>
+                    </>
+                  )}
+                  {elapsedMs > 0 && (
+                    <>
+                      <span>·</span>
+                      <span className="inline-flex items-center gap-1 font-mono tabular-nums">
+                        <Clock className="h-3 w-3" /> {formatDurationShort(elapsedMs)}
+                      </span>
                     </>
                   )}
                 </div>
@@ -245,12 +263,15 @@ export default function RunDetailPage({
 
             <Card>
               <CardContent className="p-5">
-                <PhaseStepper current={run.status} variant="large" />
+                <PhaseStepper
+                  current={run.status}
+                  variant="large"
+                  durations={durations}
+                />
               </CardContent>
             </Card>
 
             <ResourceTiles detail={detail} />
-            <WorkerStatusNotice compact />
 
             {rerunMessage && (
               <Alert variant="default">
@@ -308,7 +329,13 @@ export default function RunDetailPage({
 
               <div className="grid gap-4 md:grid-cols-2">
                 <PatchCard patch={latestPatch} />
-                <PrCard pullRequest={latestPR} />
+                <PrCard
+                  pullRequest={latestPR}
+                  runId={run.id}
+                  onMerged={() => {
+                    load().catch(() => undefined);
+                  }}
+                />
               </div>
 
               <Card>

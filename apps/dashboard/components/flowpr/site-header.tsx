@@ -2,9 +2,11 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Activity, Sparkles } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Github, Sparkles } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
+import { SystemStatusBar } from '@/components/flowpr/system-status-bar';
 
 const links = [
   { href: '/', label: 'Command Center' },
@@ -12,13 +14,36 @@ const links = [
   { href: '/health', label: 'Health' },
 ];
 
+interface HeaderProfile {
+  login?: string;
+  avatarUrl?: string;
+}
+
 export function SiteHeader() {
   const pathname = usePathname() ?? '/';
+  const [profile, setProfile] = useState<HeaderProfile | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/me', { cache: 'no-store' })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body) => {
+        if (cancelled || !body?.signedIn) return;
+        setProfile({
+          login: body.githubLogin,
+          avatarUrl: body.githubAvatarUrl,
+        });
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <header className="sticky top-0 z-40 border-b border-border/60 bg-background/80 backdrop-blur-md">
-      <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-6">
-        <Link href="/" className="group flex items-center gap-2.5">
+      <div className="mx-auto flex h-14 max-w-7xl items-center gap-4 px-6">
+        <Link href="/" className="group flex shrink-0 items-center gap-2.5">
           <div className="relative flex h-8 w-8 items-center justify-center rounded-md bg-primary/10 text-primary ring-1 ring-primary/40 transition group-hover:bg-primary/20">
             <Sparkles className="h-4 w-4" />
           </div>
@@ -55,13 +80,24 @@ export function SiteHeader() {
           })}
         </nav>
 
-        <div className="hidden items-center gap-2 rounded-full border border-border/60 bg-card/60 px-3 py-1 text-xs text-muted-foreground md:flex">
-          <span className="relative flex h-2 w-2">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-60" />
-            <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
-          </span>
-          <Activity className="h-3 w-3" />
-          live
+        <div className="ml-auto flex items-center gap-2">
+          <SystemStatusBar className="hidden sm:flex" />
+          <div
+            className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border/60 bg-card/60 text-muted-foreground"
+            title={profile?.login ?? 'GitHub'}
+            aria-label={profile?.login ? `Signed in as ${profile.login}` : 'Not signed in'}
+          >
+            {profile?.avatarUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={profile.avatarUrl}
+                alt={profile.login ? `${profile.login} avatar` : 'GitHub avatar'}
+                className="h-full w-full object-cover"
+              />
+            ) : (
+              <Github className="h-4 w-4" />
+            )}
+          </div>
         </div>
       </div>
     </header>
