@@ -1,0 +1,23 @@
+{
+  "name": "@flowpr/agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/worker.ts",
+    "worker:once": "tsx src/worker.ts --once",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@flowpr/schemas": "workspace:*",
+    "@flowpr/tools": "workspace:*",
+    "@tiny-fish/sdk": "^0.0.8",
+    "redis": "^5.12.1"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

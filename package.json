@@ -1,0 +1,28 @@
+{
+  "name": "flowpr",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.0.0",
+  "scripts": {
+    "dev": "pnpm --filter @flowpr/dashboard dev",
+    "dev:dashboard": "pnpm --filter @flowpr/dashboard dev",
+    "dev:demo": "pnpm --filter @flowpr/demo-target dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "worker:dev": "pnpm --filter @flowpr/agent dev",
+    "worker:once": "pnpm --filter @flowpr/agent worker:once",
+    "demo:reset": "tsx scripts/demo-reset.ts",
+    "demo:break": "tsx scripts/demo-break.ts",
+    "demo:start-run": "tsx scripts/demo-start-run.ts",
+    "guild:evaluate": "tsx scripts/guild-evaluate.ts",
+    "skill:dry-run": "pnpm --dir skills/flowpr-autonomous-frontend-qa skill:dry-run",
+    "mcp:list": "codex mcp list"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
+

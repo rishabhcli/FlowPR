@@ -1,0 +1,17 @@
+{
+  "version": "0.1.0",
+  "keywords": ["frontend", "qa", "browser", "pull-request", "agent"],
+  "categories": ["developer-tools", "testing", "ai-ml"],
+  "config": {
+    "env": [
+      { "name": "TINYFISH_API_KEY", "required": true, "secret": true },
+      { "name": "REDIS_URL", "required": true, "secret": true },
+      { "name": "INSFORGE_API_URL", "required": true, "secret": false },
+      { "name": "INSFORGE_API_KEY", "required": true, "secret": true },
+      { "name": "GUILD_AI_API_KEY", "required": true, "secret": true },
+      { "name": "GITHUB_TOKEN", "required": true, "secret": true },
+      { "name": "SENSO_API_KEY", "required": false, "secret": true }
+    ]
+  }
+}
+

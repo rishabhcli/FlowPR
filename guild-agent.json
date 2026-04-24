@@ -1,0 +1,27 @@
+{
+  "agent": "flowpr-autonomous-frontend-qa",
+  "version": "0.1.0",
+  "owner": "FlowPR",
+  "permissionProfile": "draft-pr-only",
+  "capabilities": [
+    "browser_evidence",
+    "repo_read",
+    "patch_generation",
+    "local_verification",
+    "draft_pull_request"
+  ],
+  "approvalRequiredFor": [
+    "private_repository",
+    "protected_branch",
+    "auth_or_payment_file",
+    "more_than_three_files_changed"
+  ],
+  "integrations": {
+    "github": {
+      "repository": "rishabhcli/FlowPR",
+      "guildAppInstalled": true,
+      "verification": "user-confirmed",
+      "localFallback": "GITHUB_TOKEN"
+    }
+  }
+}
