@@ -17,8 +17,14 @@ export interface ProviderArtifactInput {
   artifactType: string;
   providerId?: string;
   artifactUrl?: string;
+  storageBucket?: string;
+  storageKey?: string;
   requestSummary: Record<string, unknown>;
   responseSummary: Record<string, unknown>;
   raw?: Record<string, unknown>;
 }
 
+export interface ProviderArtifact extends ProviderArtifactInput {
+  id: string;
+  createdAt: string;
+}

@@ -5,7 +5,7 @@ const requiredEnv = [
   'TINYFISH_API_KEY',
   'REDIS_URL',
   'INSFORGE_API_URL',
-  'INSFORGE_API_KEY',
+  'INSFORGE_ANON_KEY',
   'GITHUB_TOKEN',
 ] as const;
 
@@ -51,7 +51,17 @@ export function loadLocalEnv(startDir = process.cwd()): string | undefined {
 }
 
 export function getMissingRequiredEnv(env: NodeJS.ProcessEnv = process.env): RequiredEnvName[] {
-  return requiredEnv.filter((key) => !env[key]);
+  return requiredEnv.filter((key) => {
+    if (key === 'INSFORGE_API_URL') {
+      return !env.INSFORGE_API_URL && !env.INSFORGE_URL && !env.NEXT_PUBLIC_INSFORGE_URL;
+    }
+
+    if (key === 'INSFORGE_ANON_KEY') {
+      return !env.INSFORGE_ANON_KEY && !env.INSFORGE_API_KEY && !env.NEXT_PUBLIC_INSFORGE_ANON_KEY;
+    }
+
+    return !env[key];
+  });
 }
 
 export function getMissingRecommendedEnv(

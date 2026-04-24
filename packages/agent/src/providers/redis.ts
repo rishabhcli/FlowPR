@@ -1,13 +1,28 @@
-import { createClient, type RedisClientType } from 'redis';
-
-export function createFlowPrRedisClient(): RedisClientType {
-  return createClient({
-    url: process.env.REDIS_URL,
-  });
-}
-
-export const flowPrStreams = {
-  runs: 'flowpr:runs',
-  artifacts: 'flowpr:artifacts',
-  actions: 'flowpr:action-gates',
-} as const;
+export {
+  acquireRedisLock,
+  ackEvent,
+  claimStaleEvents,
+  connectFlowPrRedisClient,
+  createBugSignatureHash,
+  createFlowPrRedisClient,
+  emitAgentStep,
+  emitRunStarted,
+  ensureFlowPrConsumerGroup,
+  ensureFlowPrConsumerGroups,
+  flowPrConsumerGroup,
+  flowPrReadableStreams,
+  flowPrStreams,
+  getRedisStreamStats,
+  listRedisStreamEntries,
+  lookupBugSignatureMemory,
+  lookupSuccessfulPatchMemory,
+  moveToDeadLetter,
+  redisLockKeys,
+  redisMemoryKeys,
+  releaseRedisLock,
+  retryRedisEvent,
+  storeBugSignatureMemory,
+  storeSuccessfulPatchMemory,
+  type FlowPrRedisEvent,
+  type RunStreamEvent,
+} from '@flowpr/tools';
