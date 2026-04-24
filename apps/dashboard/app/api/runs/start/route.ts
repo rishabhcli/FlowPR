@@ -37,9 +37,11 @@ export async function POST(request: Request) {
 
     await appendTimelineEvent({
       runId: run.id,
-      status: 'queued',
-      message: 'Run created from dashboard input.',
-      metadata: {
+      actor: 'user',
+      phase: 'intake',
+      status: 'started',
+      title: 'Run created from dashboard input.',
+      data: {
         repoUrl: run.repoUrl,
         previewUrl: run.previewUrl,
         flowGoal: run.flowGoal,
@@ -52,7 +54,7 @@ export async function POST(request: Request) {
       artifactType: 'database_record',
       providerId: run.id,
       requestSummary: {
-        table: 'runs',
+        table: 'qa_runs',
         operation: 'insert',
       },
       responseSummary: {
@@ -72,9 +74,11 @@ export async function POST(request: Request) {
 
       await appendTimelineEvent({
         runId: run.id,
-        status: 'loading_repo',
-        message: 'GitHub repository metadata loaded.',
-        metadata: repository as unknown as Record<string, unknown>,
+        actor: 'github',
+        phase: 'loading_repo',
+        status: 'completed',
+        title: 'GitHub repository metadata loaded.',
+        data: repository as unknown as Record<string, unknown>,
       });
 
       await recordProviderArtifact({
@@ -98,9 +102,11 @@ export async function POST(request: Request) {
       warnings.push(`GitHub repository lookup failed: ${getErrorMessage(error)}`);
       await appendTimelineEvent({
         runId: run.id,
-        status: 'queued',
-        message: 'GitHub repository lookup failed.',
-        metadata: {
+        actor: 'github',
+        phase: 'loading_repo',
+        status: 'failed',
+        title: 'GitHub repository lookup failed.',
+        data: {
           error: getErrorMessage(error),
         },
       });
@@ -116,9 +122,11 @@ export async function POST(request: Request) {
 
       await appendTimelineEvent({
         runId: run.id,
-        status: 'queued',
-        message: 'Redis run event emitted.',
-        metadata: {
+        actor: 'redis',
+        phase: 'queue',
+        status: 'completed',
+        title: 'Redis run event emitted.',
+        data: {
           stream: 'flowpr:runs',
           streamId,
         },
@@ -145,9 +153,11 @@ export async function POST(request: Request) {
       warnings.push(`Redis event emission failed: ${getErrorMessage(error)}`);
       await appendTimelineEvent({
         runId: run.id,
-        status: 'queued',
-        message: 'Redis event emission failed.',
-        metadata: {
+        actor: 'redis',
+        phase: 'queue',
+        status: 'failed',
+        title: 'Redis event emission failed.',
+        data: {
           error: getErrorMessage(error),
         },
       });

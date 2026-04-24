@@ -11,9 +11,15 @@ import {
   getRun,
   loadLocalEnv,
   moveToDeadLetter,
+  recordActionGate,
+  recordBenchmarkEvaluation,
   readRunEvents,
   recordBrowserObservation,
+  recordBugHypothesis,
+  recordPolicyHit,
   recordProviderArtifact,
+  recordVerificationResult,
+  updateAgentSessionsForRun,
   updateRunStatus,
   type RunStreamEvent,
 } from '@flowpr/tools';
@@ -28,9 +34,11 @@ async function loadGitHubMetadata(runId: string, owner: string, repo: string) {
 
   await appendTimelineEvent({
     runId,
-    status: 'loading_repo',
-    message: 'Worker verified GitHub repository metadata.',
-    metadata: repository as unknown as Record<string, unknown>,
+    actor: 'github',
+    phase: 'loading_repo',
+    status: 'completed',
+    title: 'Worker verified GitHub repository metadata.',
+    data: repository as unknown as Record<string, unknown>,
   });
 
   await recordProviderArtifact({
@@ -53,9 +61,11 @@ async function querySensoPolicy(runId: string, flowGoal: string) {
   if (!process.env.SENSO_API_KEY) {
     await appendTimelineEvent({
       runId,
-      status: 'retrieving_policy',
-      message: 'Senso policy lookup skipped because SENSO_API_KEY is not configured.',
-      metadata: {},
+      actor: 'senso',
+      phase: 'retrieving_policy',
+      status: 'skipped',
+      title: 'Senso policy lookup skipped because SENSO_API_KEY is not configured.',
+      data: {},
     });
     return;
   }
@@ -69,13 +79,34 @@ async function querySensoPolicy(runId: string, flowGoal: string) {
 
   await appendTimelineEvent({
     runId,
-    status: 'retrieving_policy',
-    message: 'Senso policy context retrieved.',
-    metadata: {
+    actor: 'senso',
+    phase: 'retrieving_policy',
+    status: 'completed',
+    title: 'Senso policy context retrieved.',
+    data: {
       query,
       resultType: Array.isArray(result) ? 'array' : typeof result,
     },
   });
+
+  const policyResults = Array.isArray(result) ? result : [result];
+
+  for (const [index, policyResult] of policyResults.slice(0, 3).entries()) {
+    const record: Record<string, unknown> = policyResult && typeof policyResult === 'object'
+      ? (policyResult as Record<string, unknown>)
+      : { value: policyResult };
+
+    await recordPolicyHit({
+      runId,
+      provider: 'senso',
+      query,
+      title: typeof record.title === 'string' ? record.title : `Senso policy result ${index + 1}`,
+      sourceUrl: typeof record.url === 'string' ? record.url : undefined,
+      summary: typeof record.summary === 'string' ? record.summary : undefined,
+      score: typeof record.score === 'number' ? record.score : undefined,
+      raw: record,
+    });
+  }
 
   await recordProviderArtifact({
     runId,
@@ -96,6 +127,22 @@ async function querySensoPolicy(runId: string, flowGoal: string) {
 
 async function queueTinyFishRun(run: NonNullable<Awaited<ReturnType<typeof getRun>>>) {
   const client = createTinyFishClient();
+
+  await recordActionGate({
+    runId: run.id,
+    gateType: 'tinyfish_live_browser_run',
+    riskLevel: run.riskLevel,
+    status: 'allowed',
+    reason: 'Worker is permitted to start the TinyFish browser QA run for this queued FlowPR run.',
+    requestedBy: 'worker',
+    resolvedBy: 'system',
+    resolvedAt: new Date().toISOString(),
+    metadata: {
+      previewUrl: run.previewUrl,
+      flowGoal: run.flowGoal,
+    },
+  });
+
   const response = await queueBrowserQa(client, {
     runId: run.id,
     previewUrl: run.previewUrl,
@@ -131,14 +178,35 @@ async function queueTinyFishRun(run: NonNullable<Awaited<ReturnType<typeof getRu
       },
     });
 
+    await recordBugHypothesis({
+      runId: run.id,
+      summary: 'TinyFish browser QA could not be queued.',
+      affectedFlow: run.flowGoal,
+      suspectedCause: response.error.message,
+      confidence: 'high',
+      severity: run.riskLevel,
+      acceptanceCriteria: [
+        {
+          text: 'TinyFish must accept the browser QA request and return a provider run ID.',
+          source: 'technical_phase_2',
+        },
+      ],
+      evidence: {
+        provider: 'tinyfish',
+        response,
+      },
+    });
+
     throw new Error(`TinyFish queue failed: ${response.error.message}`);
   }
 
   await appendTimelineEvent({
     runId: run.id,
-    status: 'running_browser_qa',
-    message: 'TinyFish browser QA run queued.',
-    metadata: {
+    actor: 'tinyfish',
+    phase: 'running_browser_qa',
+    status: 'started',
+    title: 'TinyFish browser QA run queued.',
+    data: {
       tinyfishRunId: response.run_id,
     },
   });
@@ -164,7 +232,7 @@ async function queueTinyFishRun(run: NonNullable<Awaited<ReturnType<typeof getRu
   await recordBrowserObservation({
     runId: run.id,
     provider: 'tinyfish',
-    providerId: response.run_id,
+    providerRunId: response.run_id,
     status: 'queued',
     severity: run.riskLevel,
     expectedBehavior: run.flowGoal,
@@ -179,9 +247,11 @@ async function queueTinyFishRun(run: NonNullable<Awaited<ReturnType<typeof getRu
   if (!finalRun) {
     await appendTimelineEvent({
       runId: run.id,
-      status: 'running_browser_qa',
-      message: 'TinyFish run is still in progress.',
-      metadata: {
+      actor: 'tinyfish',
+      phase: 'running_browser_qa',
+      status: 'info',
+      title: 'TinyFish run is still in progress.',
+      data: {
         tinyfishRunId: response.run_id,
       },
     });
@@ -209,11 +279,17 @@ async function queueTinyFishRun(run: NonNullable<Awaited<ReturnType<typeof getRu
 
   if (finalRun.status === 'COMPLETED') {
     await updateRunStatus(run.id, 'done');
+    await updateAgentSessionsForRun(run.id, 'completed', {
+      tinyfishRunId: response.run_id,
+      status: finalRun.status,
+    });
     await appendTimelineEvent({
       runId: run.id,
-      status: 'done',
-      message: 'TinyFish browser QA completed.',
-      metadata: {
+      actor: 'tinyfish',
+      phase: 'running_browser_qa',
+      status: 'completed',
+      title: 'TinyFish browser QA completed.',
+      data: {
         tinyfishRunId: response.run_id,
         steps: finalRun.num_of_steps,
       },
@@ -221,24 +297,67 @@ async function queueTinyFishRun(run: NonNullable<Awaited<ReturnType<typeof getRu
     await recordBrowserObservation({
       runId: run.id,
       provider: 'tinyfish',
-      providerId: response.run_id,
+      providerRunId: response.run_id,
       status: 'passed',
       severity: run.riskLevel,
       expectedBehavior: run.flowGoal,
       observedBehavior: 'TinyFish completed the requested browser flow.',
+      result: {
+        status: finalRun.status,
+        numOfSteps: finalRun.num_of_steps,
+      },
       raw: {
         result: finalRun.result,
+      },
+    });
+    await recordVerificationResult({
+      runId: run.id,
+      provider: 'tinyfish',
+      status: 'passed',
+      summary: 'TinyFish completed the live browser QA flow.',
+      artifacts: [
+        {
+          sponsor: 'tinyfish',
+          providerId: response.run_id,
+          type: 'agent_run_result',
+        },
+      ],
+      raw: {
+        finalRun,
+      },
+    });
+    await recordBenchmarkEvaluation({
+      runId: run.id,
+      sponsor: 'guildai',
+      benchmarkName: 'phase2_live_browser_qa_completion',
+      score: 1,
+      status: 'passed',
+      metrics: {
+        tinyfishStatus: finalRun.status,
+        numOfSteps: finalRun.num_of_steps,
+      },
+      raw: {
+        tinyfishRunId: response.run_id,
       },
     });
     return;
   }
 
-  await updateRunStatus(run.id, 'failed');
+  await updateRunStatus(run.id, 'failed', {
+    failureSummary: finalRun.error?.message ?? `TinyFish ended with status ${finalRun.status}.`,
+  });
+  await updateAgentSessionsForRun(run.id, 'failed', {
+    tinyfishRunId: response.run_id,
+    status: finalRun.status,
+    error: finalRun.error?.message,
+  });
   await appendTimelineEvent({
     runId: run.id,
+    actor: 'tinyfish',
+    phase: 'running_browser_qa',
     status: 'failed',
-    message: 'TinyFish browser QA did not complete successfully.',
-    metadata: {
+    title: 'TinyFish browser QA did not complete successfully.',
+    data: {
       tinyfishRunId: response.run_id,
       tinyfishStatus: finalRun.status,
       error: finalRun.error?.message,
@@ -247,13 +366,66 @@ async function queueTinyFishRun(run: NonNullable<Awaited<ReturnType<typeof getRu
   await recordBrowserObservation({
     runId: run.id,
     provider: 'tinyfish',
-    providerId: response.run_id,
+    providerRunId: response.run_id,
     status: finalRun.status === 'FAILED' ? 'failed' : 'errored',
     severity: run.riskLevel,
     expectedBehavior: run.flowGoal,
     observedBehavior: finalRun.error?.message ?? `TinyFish ended with status ${finalRun.status}.`,
+    result: {
+      status: finalRun.status,
+      numOfSteps: finalRun.num_of_steps,
+    },
     raw: {
       result: finalRun.result,
+      error: finalRun.error,
+    },
+  });
+  await recordBugHypothesis({
+    runId: run.id,
+    summary: 'TinyFish reported that the requested browser flow failed.',
+    affectedFlow: run.flowGoal,
+    suspectedCause: finalRun.error?.message ?? `TinyFish ended with status ${finalRun.status}.`,
+    confidence: finalRun.status === 'FAILED' ? 'high' : 'medium',
+    severity: run.riskLevel,
+    acceptanceCriteria: [
+      {
+        text: run.flowGoal,
+        source: 'dashboard_input',
+      },
+    ],
+    evidence: {
+      tinyfishRunId: response.run_id,
+      finalRun,
+    },
+  });
+  await recordVerificationResult({
+    runId: run.id,
+    provider: 'tinyfish',
+    status: finalRun.status === 'FAILED' ? 'failed' : 'errored',
+    summary: finalRun.error?.message ?? `TinyFish ended with status ${finalRun.status}.`,
+    artifacts: [
+      {
+        sponsor: 'tinyfish',
+        providerId: response.run_id,
+        type: 'agent_run_result',
+      },
+    ],
+    raw: {
+      finalRun,
+    },
+  });
+  await recordBenchmarkEvaluation({
+    runId: run.id,
+    sponsor: 'guildai',
+    benchmarkName: 'phase2_live_browser_qa_completion',
+    score: 0,
+    status: finalRun.status === 'FAILED' ? 'failed' : 'errored',
+    metrics: {
+      tinyfishStatus: finalRun.status,
+      numOfSteps: finalRun.num_of_steps,
+    },
+    raw: {
+      tinyfishRunId: response.run_id,
       error: finalRun.error,
     },
   });
@@ -285,9 +457,11 @@ async function processRunStarted(event: RunStreamEvent) {
 
   await appendTimelineEvent({
     runId: run.id,
-    status: run.status,
-    message: 'Worker claimed Redis run event.',
-    metadata: {
+    actor: 'worker',
+    phase: run.status,
+    status: 'started',
+    title: 'Worker claimed Redis run event.',
+    data: {
       stream: event.stream,
       streamId: event.id,
       dedupeKey: event.dedupeKey,
@@ -357,12 +531,20 @@ async function main() {
           await ackRunEvent(redis, event.id);
 
           try {
-            await updateRunStatus(event.runId, 'failed');
+            await updateRunStatus(event.runId, 'failed', {
+              failureSummary: getErrorMessage(error),
+            });
+            await updateAgentSessionsForRun(event.runId, 'failed', {
+              streamId: event.id,
+              error: getErrorMessage(error),
+            });
             await appendTimelineEvent({
               runId: event.runId,
+              actor: 'worker',
+              phase: 'dead_letter',
               status: 'failed',
-              message: 'Worker moved run event to dead letter.',
-              metadata: {
+              title: 'Worker moved run event to dead letter.',
+              data: {
                 error: getErrorMessage(error),
                 streamId: event.id,
               },

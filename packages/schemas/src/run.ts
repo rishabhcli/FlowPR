@@ -33,6 +33,7 @@ export const riskLevels: RiskLevel[] = ['low', 'medium', 'high', 'critical'];
 
 export interface FlowPrRun {
   id: string;
+  projectId: string;
   repoUrl: string;
   owner: string;
   repo: string;
@@ -45,6 +46,9 @@ export interface FlowPrRun {
   agentName: string;
   agentVersion: string;
   guildTraceId?: string;
+  startedAt?: string;
+  completedAt?: string;
+  failureSummary?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -67,31 +71,75 @@ export interface RunDetail {
   timelineEvents: TimelineEvent[];
   providerArtifacts: ProviderArtifact[];
   browserObservations: BrowserObservation[];
+  bugHypotheses: BugHypothesis[];
+  patches: PatchRecord[];
+  verificationResults: VerificationResult[];
+  pullRequests: PullRequestRecord[];
+  policyHits: PolicyHit[];
+  agentMemories: AgentMemory[];
+  agentSessions: AgentSession[];
+  actionGates: ActionGate[];
+  benchmarkEvaluations: BenchmarkEvaluation[];
 }
+
+export type TimelineActor =
+  | 'user'
+  | 'system'
+  | 'worker'
+  | 'agent'
+  | 'insforge'
+  | 'github'
+  | 'redis'
+  | 'tinyfish'
+  | 'senso'
+  | 'guildai'
+  | 'shipables'
+  | 'akash'
+  | 'wundergraph'
+  | 'playwright';
+
+export type TimelineEventStatus = 'started' | 'completed' | 'failed' | 'skipped' | 'info';
 
 export interface TimelineEvent {
   id: string;
   runId: string;
-  status: RunStatus;
-  message: string;
-  metadata: Record<string, unknown>;
+  sequence: number;
+  actor: TimelineActor;
+  phase: string;
+  status: TimelineEventStatus;
+  title: string;
+  detail?: string;
+  data: Record<string, unknown>;
   createdAt: string;
 }
+
+export type BrowserObservationProvider = 'tinyfish' | 'playwright';
+export type BrowserObservationStatus = 'queued' | 'passed' | 'failed' | 'errored';
 
 export interface BrowserObservation {
   id: string;
   runId: string;
-  provider: 'tinyfish' | 'playwright';
-  providerId?: string;
-  status: 'queued' | 'passed' | 'failed' | 'errored';
+  provider: BrowserObservationProvider;
+  providerRunId?: string;
+  status: BrowserObservationStatus;
+  severity: RiskLevel;
   failedStep?: string;
   expectedBehavior?: string;
   observedBehavior?: string;
-  severity: RiskLevel;
+  viewport: Record<string, unknown>;
   screenshotUrl?: string;
+  screenshotKey?: string;
+  traceUrl?: string;
+  traceKey?: string;
+  domSummary?: string;
+  consoleErrors: Record<string, unknown>[];
+  networkErrors: Record<string, unknown>[];
+  result: Record<string, unknown>;
   raw?: Record<string, unknown>;
   createdAt: string;
 }
+
+export type HypothesisConfidence = 'low' | 'medium' | 'high';
 
 export interface BugHypothesis {
   id: string;
@@ -99,10 +147,145 @@ export interface BugHypothesis {
   summary: string;
   affectedFlow: string;
   suspectedCause?: string;
-  confidence: 'low' | 'medium' | 'high';
+  confidence: HypothesisConfidence;
   severity: RiskLevel;
   acceptanceCriteria: Array<{ text: string; source?: string }>;
+  evidence: Record<string, unknown>;
   createdAt: string;
+}
+
+export type PatchStatus = 'planned' | 'generated' | 'applied' | 'tested' | 'failed' | 'abandoned';
+
+export interface PatchRecord {
+  id: string;
+  runId: string;
+  hypothesisId?: string;
+  branchName?: string;
+  commitSha?: string;
+  status: PatchStatus;
+  summary: string;
+  diffStat: Record<string, unknown>;
+  filesChanged: Record<string, unknown>[];
+  raw?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type VerificationStatus = 'queued' | 'passed' | 'failed' | 'errored' | 'skipped';
+
+export interface VerificationResult {
+  id: string;
+  runId: string;
+  patchId?: string;
+  provider: string;
+  status: VerificationStatus;
+  summary: string;
+  testCommand?: string;
+  artifacts: Record<string, unknown>[];
+  raw?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export type PullRequestStatus = 'draft' | 'open' | 'merged' | 'closed' | 'failed';
+
+export interface PullRequestRecord {
+  id: string;
+  runId: string;
+  patchId?: string;
+  provider: string;
+  number?: number;
+  title: string;
+  branchName: string;
+  baseBranch: string;
+  url?: string;
+  status: PullRequestStatus;
+  raw?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PolicyHit {
+  id: string;
+  runId: string;
+  provider: string;
+  query: string;
+  title?: string;
+  sourceUrl?: string;
+  summary?: string;
+  score?: number;
+  raw?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface AgentMemory {
+  id: string;
+  projectId: string;
+  runId?: string;
+  scope: string;
+  key: string;
+  value: Record<string, unknown>;
+  confidence: number;
+  expiresAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type AgentSessionStatus = 'created' | 'running' | 'completed' | 'failed';
+
+export interface AgentSession {
+  id: string;
+  runId: string;
+  sponsor: string;
+  providerSessionId?: string;
+  status: AgentSessionStatus;
+  goal: string;
+  metadata: Record<string, unknown>;
+  startedAt?: string;
+  endedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ActionGateStatus = 'pending' | 'allowed' | 'blocked' | 'approved' | 'rejected';
+
+export interface ActionGate {
+  id: string;
+  runId: string;
+  sessionId?: string;
+  gateType: string;
+  riskLevel: RiskLevel;
+  status: ActionGateStatus;
+  reason: string;
+  requestedBy: string;
+  resolvedBy?: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  resolvedAt?: string;
+}
+
+export type BenchmarkEvaluationStatus = 'passed' | 'failed' | 'errored' | 'skipped';
+
+export interface BenchmarkEvaluation {
+  id: string;
+  runId: string;
+  sponsor: string;
+  benchmarkName: string;
+  score?: number;
+  status: BenchmarkEvaluationStatus;
+  metrics: Record<string, unknown>;
+  artifactUrl?: string;
+  raw?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export const artifactStorageBucket = 'flowpr-artifacts';
+
+export function screenshotStorageKey(input: { runId: string; timestamp: string; label: string }): string {
+  return `runs/${input.runId}/screenshots/${input.timestamp}-${input.label}.png`;
+}
+
+export function traceStorageKey(input: { runId: string; label: string }): string {
+  return `runs/${input.runId}/traces/${input.label}.zip`;
 }
 
 function requiredString(value: unknown, fieldName: string): string {
@@ -198,6 +381,7 @@ export function createDraftRun(input: {
 
   return {
     id: 'local-draft-run',
+    projectId: 'local-draft-project',
     repoUrl: input.repoUrl,
     owner: repoRef.owner,
     repo: repoRef.repo,

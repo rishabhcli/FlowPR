@@ -238,8 +238,8 @@ export default function DashboardPage() {
                     <div className="timeline-item" key={eventItem.id}>
                       <time>{formatTime(eventItem.createdAt)}</time>
                       <div>
-                        <strong>{eventItem.message}</strong>
-                        <span>{eventItem.status}</span>
+                        <strong>#{eventItem.sequence} {eventItem.title}</strong>
+                        <span>{eventItem.actor} / {eventItem.phase} / {eventItem.status}</span>
                       </div>
                     </div>
                   ))
@@ -266,7 +266,83 @@ export default function DashboardPage() {
                       <li key={observation.id}>
                         <strong>{observation.provider}</strong>
                         <span>{observation.status}</span>
-                        <code>{observation.providerId ?? observation.severity}</code>
+                        <code>{observation.providerRunId ?? observation.severity}</code>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+                <section>
+                  <h3>Policy Hits</h3>
+                  <ul>
+                    {runDetail.policyHits.map((policyHit) => (
+                      <li key={policyHit.id}>
+                        <strong>{policyHit.provider}</strong>
+                        <span>{policyHit.title ?? 'policy context'}</span>
+                        <code>{policyHit.score ?? 'recorded'}</code>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+                <section>
+                  <h3>Agent Control</h3>
+                  <ul>
+                    {runDetail.agentSessions.map((session) => (
+                      <li key={session.id}>
+                        <strong>{session.sponsor}</strong>
+                        <span>{session.status}</span>
+                        <code>{session.providerSessionId ?? 'session'}</code>
+                      </li>
+                    ))}
+                    {runDetail.actionGates.map((gate) => (
+                      <li key={gate.id}>
+                        <strong>{gate.gateType}</strong>
+                        <span>{gate.status}</span>
+                        <code>{gate.riskLevel}</code>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+                <section>
+                  <h3>Verification</h3>
+                  <ul>
+                    {runDetail.verificationResults.map((result) => (
+                      <li key={result.id}>
+                        <strong>{result.provider}</strong>
+                        <span>{result.status}</span>
+                        <code>{result.artifacts.length} artifacts</code>
+                      </li>
+                    ))}
+                    {runDetail.benchmarkEvaluations.map((evaluation) => (
+                      <li key={evaluation.id}>
+                        <strong>{evaluation.benchmarkName}</strong>
+                        <span>{evaluation.status}</span>
+                        <code>{evaluation.score ?? 'n/a'}</code>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+                <section>
+                  <h3>Fix Records</h3>
+                  <ul>
+                    {runDetail.bugHypotheses.map((hypothesis) => (
+                      <li key={hypothesis.id}>
+                        <strong>{hypothesis.severity}</strong>
+                        <span>{hypothesis.summary}</span>
+                        <code>{hypothesis.confidence}</code>
+                      </li>
+                    ))}
+                    {runDetail.patches.map((patch) => (
+                      <li key={patch.id}>
+                        <strong>{patch.status}</strong>
+                        <span>{patch.summary}</span>
+                        <code>{patch.branchName ?? 'patch'}</code>
+                      </li>
+                    ))}
+                    {runDetail.pullRequests.map((pullRequest) => (
+                      <li key={pullRequest.id}>
+                        <strong>{pullRequest.provider}</strong>
+                        <span>{pullRequest.status}</span>
+                        <code>{pullRequest.number ?? pullRequest.branchName}</code>
                       </li>
                     ))}
                   </ul>
