@@ -12,6 +12,10 @@ test-results/
 .flowpr-workspaces/
 chainguard-node-sbom.json
 
+# Local screenshots and MCP browser session artifacts
+.playwright-mcp/
+/*.png
+
 
 # InsForge & AI agent skills
 .insforge
