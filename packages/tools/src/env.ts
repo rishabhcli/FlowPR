@@ -6,13 +6,13 @@ const requiredEnv = [
   'REDIS_URL',
   'INSFORGE_API_URL',
   'INSFORGE_ANON_KEY',
-  'GITHUB_TOKEN',
 ] as const;
+const githubAuthRequirement = 'GITHUB_TOKEN or GITHUB_APP_ID/GITHUB_APP_PRIVATE_KEY' as const;
 
 const recommendedEnv = ['GUILD_AI_WORKSPACE', 'SENSO_API_KEY', 'AKASH_API_KEY'] as const;
 const guildConnectivityCheck = 'GUILD_AI_API_KEY or GUILD_GITHUB_APP_INSTALLED' as const;
 
-export type RequiredEnvName = (typeof requiredEnv)[number];
+export type RequiredEnvName = (typeof requiredEnv)[number] | typeof githubAuthRequirement;
 export type RecommendedEnvName = (typeof recommendedEnv)[number] | typeof guildConnectivityCheck;
 
 export function loadLocalEnv(startDir = process.cwd()): string | undefined {
@@ -51,7 +51,7 @@ export function loadLocalEnv(startDir = process.cwd()): string | undefined {
 }
 
 export function getMissingRequiredEnv(env: NodeJS.ProcessEnv = process.env): RequiredEnvName[] {
-  return requiredEnv.filter((key) => {
+  const missing: RequiredEnvName[] = requiredEnv.filter((key) => {
     if (key === 'INSFORGE_API_URL') {
       return !env.INSFORGE_API_URL && !env.INSFORGE_URL && !env.NEXT_PUBLIC_INSFORGE_URL;
     }
@@ -62,6 +62,17 @@ export function getMissingRequiredEnv(env: NodeJS.ProcessEnv = process.env): Req
 
     return !env[key];
   });
+
+  const hasGitHubToken = Boolean(env.GITHUB_TOKEN);
+  const hasGitHubApp = Boolean(
+    env.GITHUB_APP_ID && (env.GITHUB_APP_PRIVATE_KEY || env.GITHUB_APP_PRIVATE_KEY_BASE64 || env.GITHUB_APP_PRIVATE_KEY_B64),
+  );
+
+  if (!hasGitHubToken && !hasGitHubApp) {
+    missing.push(githubAuthRequirement);
+  }
+
+  return missing;
 }
 
 export function getMissingRecommendedEnv(

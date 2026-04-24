@@ -1,8 +1,64 @@
 ---
-description: Instructions building apps with MCP
+description: FlowPR agent and InsForge integration instructions
 globs: *
 alwaysApply: true
 ---
+
+# FlowPR Repository Guidance
+
+FlowPR is an autonomous frontend QA engineer. It opens a live app, tests an important user flow, captures evidence, diagnoses failures, prepares a focused patch, verifies the fix, and opens a GitHub PR with proof.
+
+## Repo Shape
+
+- Use `pnpm` with the checked-in workspace layout; do not introduce npm/yarn lockfiles.
+- Root package: orchestration scripts and shared dev dependencies.
+- `apps/dashboard`: Next.js 15 + React 19 dashboard and API routes on port 3000.
+- `apps/demo-target`: seeded Next.js demo app on port 3100 with the mobile checkout Playwright test.
+- `packages/agent`: Redis worker and autonomous run state machine.
+- `packages/tools`: provider/runtime integrations for InsForge, TinyFish, Redis, GitHub, Senso, WunderGraph, Guild.ai, and readiness checks.
+- `packages/schemas`: shared run, provider artifact, and label types. Update this package first when changing cross-package contracts.
+- `skills/flowpr-autonomous-frontend-qa`: Shipables skill package, runbook, references, and skill scripts.
+
+## Local Commands
+
+- Install: `pnpm install`
+- Dashboard: `pnpm dev:dashboard`
+- Worker: `pnpm worker:dev`
+- Demo target: `pnpm dev:demo`
+- Typecheck all packages: `pnpm typecheck`
+- Lint alias: `pnpm lint`
+- Build all packages: `pnpm build`
+- Redis smoke test: `pnpm redis:smoke`
+- Guild evaluation: `pnpm guild:evaluate`
+- Demo checkout test: `pnpm phase4:checkout-test`
+- Skill dry run: `pnpm skill:dry-run`
+
+Run the smallest relevant verification for the change. For shared schema/tooling changes, prefer `pnpm typecheck`; for dashboard UI/API changes, use the dashboard build or typecheck; for demo checkout behavior, use `pnpm phase4:checkout-test`.
+
+## Environment
+
+- Copy `.env.example` to `.env` for local work.
+- Required for the full loop: `TINYFISH_API_KEY`, `REDIS_URL`, `INSFORGE_API_URL`, `INSFORGE_ANON_KEY`, and `GITHUB_TOKEN` or GitHub App credentials.
+- Optional/sponsor integrations: `SENSO_API_KEY`, `WUNDERGRAPH_API_URL`, `WUNDERGRAPH_API_KEY`, `GUILD_AI_API_KEY`, `SHIPABLES_API_KEY`, and Akash credentials.
+- Keep secrets out of committed files and logs. Use existing redaction helpers in `packages/tools` when adding diagnostics.
+
+## Product Invariants
+
+- Preserve the evidence pipeline: live browser observation, structured artifact, dashboard display, verification proof, and PR evidence packet.
+- TinyFish is the primary live-browser engine; Playwright is used for deterministic local/demo verification and fallback evidence.
+- Redis streams, locks, retries, heartbeats, and dead-letter records are core state. Keep worker handlers idempotent and lock protected.
+- InsForge is the durable system of record for runs, observations, artifacts, patches, and PR metadata.
+- Use WunderGraph safelisted operations for controlled agent actions instead of arbitrary backend writes when a safelisted operation exists.
+- Respect Guild.ai action gates before patch generation and PR creation paths.
+- Query/use Senso policy context before final diagnosis or PR writing when that integration is available.
+
+## Coding Conventions
+
+- Keep changes scoped and aligned with existing package boundaries.
+- Use `@flowpr/schemas` for shared data shapes instead of duplicating ad hoc types.
+- Dashboard UI should feel like an operational command center: dense, scannable, and evidence-first. Follow the existing Radix/shadcn-style components, `lucide-react` icons, and Tailwind patterns.
+- Keep Tailwind CSS on v3.4. Do not upgrade Tailwind to v4.
+- Avoid committing generated build artifacts such as `tsconfig.tsbuildinfo` unless the task explicitly requires them.
 
 # InsForge SDK Documentation - Overview
 

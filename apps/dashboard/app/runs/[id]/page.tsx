@@ -38,6 +38,7 @@ import {
   type ReadinessSummary,
 } from '@/components/flowpr/readiness-meter';
 import { StateBadge } from '@/components/flowpr/state-badge';
+import { WorkerStatusNotice } from '@/components/flowpr/worker-status-notice';
 import { formatDateTime, formatTime } from '@/lib/format';
 
 interface ReadinessResponse extends ReadinessSummary {
@@ -249,6 +250,7 @@ export default function RunDetailPage({
             </Card>
 
             <ResourceTiles detail={detail} />
+            <WorkerStatusNotice compact />
 
             {rerunMessage && (
               <Alert variant="default">

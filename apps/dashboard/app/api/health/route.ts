@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { checkSponsorStatuses, flowPrStreams, loadLocalEnv } from '@flowpr/tools';
+import { checkSponsorStatuses, flowPrStreams, hasGitHubCredentials, loadLocalEnv } from '@flowpr/tools';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
@@ -38,7 +38,7 @@ export async function GET() {
         : process.env.INSFORGE_API_URL || process.env.INSFORGE_API_KEY
           ? 'partial'
           : 'missing',
-    github: envFlag('GITHUB_TOKEN'),
+    github: hasGitHubCredentials() ? 'configured' : 'missing',
     senso: envFlag('SENSO_API_KEY'),
     wundergraph: process.env.WUNDERGRAPH_API_URL || process.env.WUNDERGRAPH_MCP_URL ? 'configured' : 'missing',
     guildai:

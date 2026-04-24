@@ -1,5 +1,5 @@
 import { parseGitHubRepoUrl } from '@flowpr/schemas';
-import { getGitHubRepository, getBranchRef } from './github';
+import { getGitHubRepository, getBranchRef, hasGitHubCredentials } from './github';
 
 export type ValidationErrorCode =
   | 'repoUrl.invalid'
@@ -183,7 +183,7 @@ async function checkRepoAndBranch(repoUrl: string, baseBranch: string): Promise<
     });
   }
 
-  if (!process.env.GITHUB_TOKEN) {
+  if (!hasGitHubCredentials()) {
     return issues;
   }
 
@@ -194,7 +194,7 @@ async function checkRepoAndBranch(repoUrl: string, baseBranch: string): Promise<
       code: 'repoUrl.notFound',
       field: 'repoUrl',
       message: `GitHub repository ${owner}/${repo} is not reachable with the configured token.`,
-      suggestion: 'Confirm the repository exists and that GITHUB_TOKEN has contents:read and pull_requests:write on it.',
+      suggestion: 'Confirm the repository exists and GitHub auth is configured with GITHUB_TOKEN or a GitHub App installation.',
       severity: 'warning',
     });
     return issues;

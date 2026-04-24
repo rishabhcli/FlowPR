@@ -41,6 +41,7 @@ import {
 } from '@/components/flowpr/sponsor-rail';
 import { StateBadge } from '@/components/flowpr/state-badge';
 import { DeadLetterStrip } from '@/components/flowpr/dead-letter-strip';
+import { WorkerStatusNotice } from '@/components/flowpr/worker-status-notice';
 import { formatDateTime } from '@/lib/format';
 import { useRunStream } from '@/lib/use-run-stream';
 
@@ -271,6 +272,7 @@ export default function DashboardPage() {
           </section>
 
           <DeadLetterStrip className="mb-4" />
+          <WorkerStatusNotice className="mb-4" compact />
 
           {error && (
             <Alert variant="destructive" className="mb-4">

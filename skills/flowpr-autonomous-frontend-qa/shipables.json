@@ -10,7 +10,10 @@
       { "name": "INSFORGE_API_KEY", "required": true, "secret": true },
       { "name": "GUILD_AI_API_KEY", "required": false, "secret": true },
       { "name": "GUILD_AI_WORKSPACE", "required": false, "secret": false },
-      { "name": "GITHUB_TOKEN", "required": true, "secret": true },
+      { "name": "GITHUB_TOKEN", "required": false, "secret": true },
+      { "name": "GITHUB_APP_ID", "required": true, "secret": false },
+      { "name": "GITHUB_APP_PRIVATE_KEY", "required": true, "secret": true },
+      { "name": "GITHUB_APP_INSTALLATION_ID", "required": false, "secret": false },
       { "name": "SENSO_API_KEY", "required": false, "secret": true },
       { "name": "WUNDERGRAPH_API_URL", "required": false, "secret": false },
       { "name": "WUNDERGRAPH_API_KEY", "required": false, "secret": true }

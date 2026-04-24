@@ -25,10 +25,17 @@ const manifest = JSON.parse(readFileSync(join(skillDir, 'shipables.json'), 'utf8
 const env = manifest.config?.env ?? [];
 const requiredEnv = env.filter((entry) => entry.required).map((entry) => entry.name);
 
-for (const name of ['TINYFISH_API_KEY', 'REDIS_URL', 'INSFORGE_API_URL', 'GITHUB_TOKEN']) {
+for (const name of ['TINYFISH_API_KEY', 'REDIS_URL', 'INSFORGE_API_URL']) {
   if (!requiredEnv.includes(name)) {
     throw new Error(`shipables.json must require ${name}`);
   }
+}
+
+const hasGitHubToken = requiredEnv.includes('GITHUB_TOKEN');
+const hasGitHubApp = requiredEnv.includes('GITHUB_APP_ID') && requiredEnv.includes('GITHUB_APP_PRIVATE_KEY');
+
+if (!hasGitHubToken && !hasGitHubApp) {
+  throw new Error('shipables.json must require either GITHUB_TOKEN or GitHub App credentials');
 }
 
 if (!manifest.entrypoints?.run_flow_test) {

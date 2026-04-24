@@ -14,6 +14,7 @@ import {
   emitVerificationResult,
   failIdempotentOperation,
   flowPrStreams,
+  getGitHubAuthToken,
   getGitHubRepository,
   getRedisStreamStats,
   getRun,
@@ -1407,12 +1408,13 @@ async function handlePatchingCode(redis: RedisClientType, run: FlowPrRun, event:
     }
 
     const patchStart = Date.now();
+    const githubAuthToken = await getGitHubAuthToken({ owner: run.owner, repo: run.repo });
     const patchResult = await generateDemoCookieBannerPatch({
       runId: run.id,
       repoUrl: run.repoUrl,
       baseBranch: run.baseBranch,
       triage,
-      authToken: process.env.GITHUB_TOKEN,
+      authToken: githubAuthToken,
     });
 
     await recordToolCall({
