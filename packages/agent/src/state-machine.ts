@@ -1,8 +1,9 @@
 import type { RedisClientType } from 'redis';
-import type { BrowserObservation, FlowPrRun, RunStatus } from '@flowpr/schemas';
+import type { BrowserObservation, BrowserObservationResult, FlowPrRun, RunStatus } from '@flowpr/schemas';
 import {
   acquireRedisLock,
   appendTimelineEvent,
+  createBrowserSession,
   completeIdempotentOperation,
   createBugSignatureHash,
   createSensoClient,
@@ -32,14 +33,21 @@ import {
   redisLockKeys,
   redisMemoryKeys,
   releaseRedisLock,
+  runAgentFlow,
   startIdempotentOperation,
   storeBugSignatureMemory,
   storeSuccessfulPatchMemory,
+  terminateBrowserSession,
   updateAgentSessionsForRun,
   updateRunStatus,
   type FlowPrRedisEvent,
+  type TinyFishAgentFlowResult,
 } from '@flowpr/tools';
-import { createTinyFishClient, queueBrowserQa } from './providers/tinyfish';
+import {
+  runLocalFlowTest,
+  runRemoteBrowserSessionEvidence,
+  type LocalFlowTestResult,
+} from '@flowpr/tools/playwright';
 
 const stateOrder: RunStatus[] = [
   'queued',
@@ -328,35 +336,433 @@ async function querySensoPolicy(run: FlowPrRun, event: FlowPrRedisEvent): Promis
   });
 }
 
-async function waitForTinyFishRun(
-  client: ReturnType<typeof createTinyFishClient>,
-  tinyfishRunId: string,
-) {
-  for (let attempt = 0; attempt < 12; attempt += 1) {
-    const run = await client.runs.get(tinyfishRunId);
-
-    if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(run.status)) {
-      return run;
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 5000));
-  }
-
-  return null;
+interface BrowserQaOutcome {
+  providerRunId?: string;
+  status: string;
+  tinyfishPassed: boolean;
+  playwrightPassed?: boolean;
+  screenshotUrl?: string;
+  traceUrl?: string;
+  failureSummary?: string;
 }
 
-async function queueTinyFishRun(
+function stringRecords(values: string[]): Record<string, unknown>[] {
+  return values.map((message) => ({ message }));
+}
+
+function networkRecords(values: BrowserObservationResult['networkErrors']): Record<string, unknown>[] {
+  return values.map((failure) => ({ ...failure }));
+}
+
+function observationStatus(passed: boolean, errored = false): 'passed' | 'failed' | 'errored' {
+  if (errored) return 'errored';
+  return passed ? 'passed' : 'failed';
+}
+
+function tinyFishSummary(flow: TinyFishAgentFlowResult): Record<string, unknown> {
+  return {
+    status: flow.status,
+    passed: flow.observation.passed,
+    failedStep: flow.observation.failedStep,
+    visibleError: flow.observation.visibleError,
+    likelyRootCause: flow.observation.likelyRootCause,
+    confidence: flow.observation.confidence,
+    attempts: flow.attempts,
+    progressEvents: flow.progressEvents.length,
+    streamingUrl: flow.streamingUrl,
+  };
+}
+
+async function recordFailureHypothesis(input: {
+  run: FlowPrRun;
+  provider: 'tinyfish' | 'playwright';
+  providerRunId?: string;
+  failedStep?: string;
+  visibleError?: string;
+  likelyRootCause?: string;
+  confidence?: number;
+  event: FlowPrRedisEvent;
+  evidence: Record<string, unknown>;
+}): Promise<void> {
+  await recordBugHypothesis({
+    runId: input.run.id,
+    summary: `${input.provider} evidence shows the requested frontend flow did not complete.`,
+    affectedFlow: input.run.flowGoal,
+    suspectedCause: input.likelyRootCause ?? input.visibleError,
+    confidence: (input.confidence ?? 0.5) >= 0.8 ? 'high' : 'medium',
+    severity: input.run.riskLevel,
+    acceptanceCriteria: [
+      {
+        text: input.run.flowGoal,
+        source: 'dashboard_input',
+      },
+      {
+        text: 'Primary CTAs must be reachable and unobstructed on mobile.',
+        source: 'technical_phase_4',
+      },
+    ],
+    evidence: {
+      provider: input.provider,
+      providerRunId: input.providerRunId,
+      failedStep: input.failedStep,
+      visibleError: input.visibleError,
+      redisStreamId: input.event.id,
+      ...input.evidence,
+    },
+  });
+}
+
+async function recordTinyFishAgentFlow(
   run: FlowPrRun,
   event: FlowPrRedisEvent,
-): Promise<{ providerRunId?: string; status: string }> {
-  const client = createTinyFishClient();
+  flow: TinyFishAgentFlowResult,
+): Promise<void> {
+  const errored = flow.status === 'STREAM_FAILED';
+  const status = observationStatus(flow.observation.passed, errored);
 
+  await appendTimelineEvent({
+    runId: run.id,
+    actor: 'tinyfish',
+    phase: 'running_browser_qa',
+    status: errored ? 'failed' : 'completed',
+    title: 'TinyFish Agent API live browser QA completed.',
+    data: {
+      tinyfishRunId: flow.providerRunId,
+      streamingUrl: flow.streamingUrl,
+      status: flow.status,
+      passed: flow.observation.passed,
+      failedStep: flow.observation.failedStep,
+      attempts: flow.attempts,
+      streamId: event.id,
+    },
+  });
+
+  await recordProviderArtifact({
+    runId: run.id,
+    sponsor: 'tinyfish',
+    artifactType: 'browser_flow_test',
+    providerId: flow.providerRunId,
+    artifactUrl: flow.streamingUrl,
+    requestSummary: {
+      previewUrl: run.previewUrl,
+      flowGoal: run.flowGoal,
+      api: 'agent.stream',
+      output: 'strict_json',
+      streamId: event.id,
+    },
+    responseSummary: tinyFishSummary(flow),
+    raw: {
+      flow,
+    },
+  });
+
+  await recordBrowserObservation({
+    runId: run.id,
+    provider: 'tinyfish',
+    providerRunId: flow.providerRunId,
+    status,
+    severity: run.riskLevel,
+    failedStep: flow.observation.failedStep,
+    expectedBehavior: run.flowGoal,
+    observedBehavior: flow.observation.visibleError
+      ?? flow.observation.likelyRootCause
+      ?? (flow.observation.passed ? 'TinyFish completed the requested browser flow.' : 'TinyFish could not complete the requested browser flow.'),
+    viewport: { width: 390, height: 844, source: 'tinyfish_agent_goal' },
+    screenshotUrl: flow.observation.screenshots[0],
+    domSummary: flow.observation.domFindings.join('\n'),
+    consoleErrors: stringRecords(flow.observation.consoleErrors),
+    networkErrors: networkRecords(flow.observation.networkErrors),
+    result: {
+      passed: flow.observation.passed,
+      finalUrl: flow.observation.finalUrl,
+      screenshots: flow.observation.screenshots,
+      streamingUrl: flow.streamingUrl,
+      progressEvents: flow.progressEvents,
+      confidence: flow.observation.confidence,
+    },
+    raw: {
+      rawResult: flow.rawResult,
+      error: flow.error,
+    },
+  });
+
+  await recordVerificationResult({
+    runId: run.id,
+    provider: 'tinyfish',
+    status,
+    summary: flow.observation.passed
+      ? 'TinyFish Agent API completed the live browser QA flow.'
+      : flow.observation.visibleError ?? flow.observation.likelyRootCause ?? 'TinyFish Agent API reported the flow did not pass.',
+    artifacts: [
+      {
+        sponsor: 'tinyfish',
+        providerId: flow.providerRunId,
+        type: 'browser_flow_test',
+        streamingUrl: flow.streamingUrl,
+        redisStreamId: event.id,
+      },
+    ],
+    raw: {
+      flow,
+    },
+  });
+
+  if (!flow.observation.passed) {
+    await recordFailureHypothesis({
+      run,
+      provider: 'tinyfish',
+      providerRunId: flow.providerRunId,
+      failedStep: flow.observation.failedStep,
+      visibleError: flow.observation.visibleError,
+      likelyRootCause: flow.observation.likelyRootCause,
+      confidence: flow.observation.confidence,
+      event,
+      evidence: {
+        streamingUrl: flow.streamingUrl,
+        screenshots: flow.observation.screenshots,
+        progressEvents: flow.progressEvents,
+      },
+    });
+  }
+}
+
+async function recordPlaywrightEvidence(
+  run: FlowPrRun,
+  event: FlowPrRedisEvent,
+  result: LocalFlowTestResult,
+): Promise<void> {
+  const status = observationStatus(result.passed);
+
+  await appendTimelineEvent({
+    runId: run.id,
+    actor: 'playwright',
+    phase: 'running_browser_qa',
+    status: result.passed ? 'completed' : 'failed',
+    title: 'Playwright captured deterministic browser evidence.',
+    data: {
+      passed: result.passed,
+      failedStep: result.failedStep,
+      screenshotUrl: result.screenshotUrl,
+      traceUrl: result.traceUrl,
+      recoveryPassed: result.recoveryPassed,
+      streamId: event.id,
+    },
+  });
+
+  await recordProviderArtifact({
+    runId: run.id,
+    sponsor: 'playwright',
+    artifactType: 'trace_capture',
+    providerId: `playwright:${run.id}`,
+    artifactUrl: result.traceUrl ?? result.screenshotUrl,
+    requestSummary: {
+      previewUrl: run.previewUrl,
+      flowGoal: run.flowGoal,
+      command: 'runLocalFlowTest',
+      streamId: event.id,
+    },
+    responseSummary: {
+      passed: result.passed,
+      failedStep: result.failedStep,
+      screenshotUrl: result.screenshotUrl,
+      traceUrl: result.traceUrl,
+      likelyRootCause: result.likelyRootCause,
+      recoveryPassed: result.recoveryPassed,
+    },
+    raw: result.raw,
+  });
+
+  await recordBrowserObservation({
+    runId: run.id,
+    provider: 'playwright',
+    providerRunId: `playwright:${run.id}`,
+    status,
+    severity: run.riskLevel,
+    failedStep: result.failedStep,
+    expectedBehavior: run.flowGoal,
+    observedBehavior: result.visibleError
+      ?? result.likelyRootCause
+      ?? (result.passed ? 'Playwright completed the requested browser flow.' : 'Playwright could not complete the requested browser flow.'),
+    viewport: { width: 390, height: 844, source: 'playwright' },
+    screenshotUrl: result.screenshotUrl,
+    screenshotKey: result.screenshotKey,
+    traceUrl: result.traceUrl,
+    traceKey: result.traceKey,
+    domSummary: result.domFindings.join('\n'),
+    consoleErrors: stringRecords(result.consoleErrors),
+    networkErrors: networkRecords(result.networkErrors),
+    result: {
+      passed: result.passed,
+      finalUrl: result.finalUrl,
+      confidence: result.confidence,
+      recoveryPassed: result.recoveryPassed,
+    },
+    raw: result.raw,
+  });
+
+  await recordVerificationResult({
+    runId: run.id,
+    provider: 'playwright',
+    status,
+    summary: result.passed
+      ? 'Playwright trace verified the requested browser flow.'
+      : result.visibleError ?? result.likelyRootCause ?? 'Playwright trace shows the requested browser flow failed.',
+    testCommand: 'playwright-trace-capture',
+    artifacts: [
+      {
+        sponsor: 'playwright',
+        screenshotUrl: result.screenshotUrl,
+        traceUrl: result.traceUrl,
+        redisStreamId: event.id,
+      },
+    ],
+    raw: {
+      result,
+    },
+  });
+
+  if (!result.passed) {
+    await recordFailureHypothesis({
+      run,
+      provider: 'playwright',
+      providerRunId: `playwright:${run.id}`,
+      failedStep: result.failedStep,
+      visibleError: result.visibleError,
+      likelyRootCause: result.likelyRootCause,
+      confidence: result.confidence,
+      event,
+      evidence: {
+        screenshotUrl: result.screenshotUrl,
+        traceUrl: result.traceUrl,
+        domFindings: result.domFindings,
+        recoveryPassed: result.recoveryPassed,
+      },
+    });
+  }
+}
+
+async function recordTinyFishBrowserSessionEvidence(
+  run: FlowPrRun,
+  event: FlowPrRedisEvent,
+): Promise<LocalFlowTestResult | undefined> {
+  let sessionId: string | undefined;
+
+  try {
+    const session = await createBrowserSession({ url: run.previewUrl });
+    sessionId = session.session_id;
+
+    await recordProviderArtifact({
+      runId: run.id,
+      sponsor: 'tinyfish',
+      artifactType: 'browser_session_created',
+      providerId: session.session_id,
+      artifactUrl: session.base_url,
+      requestSummary: {
+        previewUrl: run.previewUrl,
+        api: 'browser.sessions.create',
+        streamId: event.id,
+      },
+      responseSummary: {
+        sessionId: session.session_id,
+        hasCdpUrl: Boolean(session.cdp_url),
+        baseUrl: session.base_url,
+      },
+      raw: {
+        session,
+      },
+    });
+
+    const result = await runRemoteBrowserSessionEvidence({
+      runId: run.id,
+      previewUrl: run.previewUrl,
+      flowGoal: run.flowGoal,
+      cdpUrl: session.cdp_url,
+      label: 'phase4-tinyfish-browser-session',
+    });
+
+    await recordProviderArtifact({
+      runId: run.id,
+      sponsor: 'tinyfish',
+      artifactType: 'browser_session_screenshot',
+      providerId: session.session_id,
+      artifactUrl: result.screenshotUrl,
+      requestSummary: {
+        previewUrl: run.previewUrl,
+        api: 'browser.cdp.playwright',
+        streamId: event.id,
+      },
+      responseSummary: {
+        passed: result.passed,
+        failedStep: result.failedStep,
+        screenshotUrl: result.screenshotUrl,
+        likelyRootCause: result.likelyRootCause,
+      },
+      raw: result.raw,
+    });
+
+    if (result.screenshotUrl) {
+      await recordBrowserObservation({
+        runId: run.id,
+        provider: 'tinyfish',
+        providerRunId: session.session_id,
+        status: observationStatus(result.passed),
+        severity: run.riskLevel,
+        failedStep: result.failedStep,
+        expectedBehavior: run.flowGoal,
+        observedBehavior: result.visibleError
+          ?? result.likelyRootCause
+          ?? 'TinyFish Browser API captured direct CDP evidence.',
+        viewport: { width: 390, height: 844, source: 'tinyfish_browser_cdp' },
+        screenshotUrl: result.screenshotUrl,
+        screenshotKey: result.screenshotKey,
+        domSummary: result.domFindings.join('\n'),
+        result: {
+          passed: result.passed,
+          finalUrl: result.finalUrl,
+          confidence: result.confidence,
+          recoveryPassed: result.recoveryPassed,
+        },
+        raw: result.raw,
+      });
+    }
+
+    return result;
+  } catch (error) {
+    await recordProviderArtifact({
+      runId: run.id,
+      sponsor: 'tinyfish',
+      artifactType: 'browser_session_error',
+      providerId: sessionId,
+      requestSummary: {
+        previewUrl: run.previewUrl,
+        api: 'browser.sessions.create',
+        streamId: event.id,
+      },
+      responseSummary: {
+        error: getErrorMessage(error),
+      },
+      raw: {
+        error: getErrorMessage(error),
+      },
+    });
+    return undefined;
+  } finally {
+    if (sessionId) {
+      await terminateBrowserSession(sessionId).catch(() => undefined);
+    }
+  }
+}
+
+async function runBrowserQa(
+  run: FlowPrRun,
+  event: FlowPrRedisEvent,
+): Promise<BrowserQaOutcome> {
   await recordActionGate({
     runId: run.id,
     gateType: 'tinyfish_live_browser_run',
     riskLevel: run.riskLevel,
     status: 'allowed',
-    reason: 'Worker is permitted to start the TinyFish browser QA run for this queued FlowPR run.',
+    reason: 'Worker is permitted to start the TinyFish live browser QA run for this queued FlowPR run.',
     requestedBy: 'worker',
     resolvedBy: 'system',
     resolvedAt: new Date().toISOString(),
@@ -364,297 +770,73 @@ async function queueTinyFishRun(
       previewUrl: run.previewUrl,
       flowGoal: run.flowGoal,
       redisStreamId: event.id,
+      tinyfishApis: ['agent.stream', 'browser.sessions.create'],
+      playwrightTrace: true,
     },
   });
-
-  const response = await queueBrowserQa(client, {
-    runId: run.id,
-    previewUrl: run.previewUrl,
-    flowGoal: run.flowGoal,
-  });
-
-  if (response.error) {
-    await recordProviderArtifact({
-      runId: run.id,
-      sponsor: 'tinyfish',
-      artifactType: 'agent_queue_error',
-      requestSummary: {
-        previewUrl: run.previewUrl,
-        flowGoal: run.flowGoal,
-        streamId: event.id,
-      },
-      responseSummary: {
-        error: response.error.message,
-        category: response.error.category,
-      },
-      raw: {
-        response,
-      },
-    });
-
-    await recordBrowserObservation({
-      runId: run.id,
-      provider: 'tinyfish',
-      status: 'errored',
-      severity: run.riskLevel,
-      observedBehavior: response.error.message,
-      raw: {
-        response,
-      },
-    });
-
-    await recordBugHypothesis({
-      runId: run.id,
-      summary: 'TinyFish browser QA could not be queued.',
-      affectedFlow: run.flowGoal,
-      suspectedCause: response.error.message,
-      confidence: 'high',
-      severity: run.riskLevel,
-      acceptanceCriteria: [
-        {
-          text: 'TinyFish must accept the browser QA request and return a provider run ID.',
-          source: 'technical_phase_3',
-        },
-      ],
-      evidence: {
-        provider: 'tinyfish',
-        response,
-        redisStreamId: event.id,
-      },
-    });
-
-    throw new Error(`TinyFish queue failed: ${response.error.message}`);
-  }
 
   await appendTimelineEvent({
     runId: run.id,
     actor: 'tinyfish',
     phase: 'running_browser_qa',
     status: 'started',
-    title: 'TinyFish browser QA run queued.',
+    title: 'TinyFish Agent API live browser QA started.',
     data: {
-      tinyfishRunId: response.run_id,
-      streamId: event.id,
-    },
-  });
-
-  await recordProviderArtifact({
-    runId: run.id,
-    sponsor: 'tinyfish',
-    artifactType: 'agent_run_queued',
-    providerId: response.run_id,
-    requestSummary: {
       previewUrl: run.previewUrl,
-      flowGoal: run.flowGoal,
-      streamId: event.id,
-    },
-    responseSummary: {
-      tinyfishRunId: response.run_id,
-      error: null,
-    },
-    raw: {
-      response,
-    },
-  });
-
-  await recordBrowserObservation({
-    runId: run.id,
-    provider: 'tinyfish',
-    providerRunId: response.run_id,
-    status: 'queued',
-    severity: run.riskLevel,
-    expectedBehavior: run.flowGoal,
-    observedBehavior: 'TinyFish accepted the live browser run and returned a provider run ID.',
-    raw: {
-      response,
-    },
-  });
-
-  const finalRun = await waitForTinyFishRun(client, response.run_id);
-
-  if (!finalRun) {
-    await appendTimelineEvent({
-      runId: run.id,
-      actor: 'tinyfish',
-      phase: 'running_browser_qa',
-      status: 'info',
-      title: 'TinyFish run is still in progress.',
-      data: {
-        tinyfishRunId: response.run_id,
-        streamId: event.id,
-      },
-    });
-    return { providerRunId: response.run_id, status: 'IN_PROGRESS' };
-  }
-
-  await recordProviderArtifact({
-    runId: run.id,
-    sponsor: 'tinyfish',
-    artifactType: 'agent_run_result',
-    providerId: response.run_id,
-    requestSummary: {
-      tinyfishRunId: response.run_id,
-      streamId: event.id,
-    },
-    responseSummary: {
-      status: finalRun.status,
-      numOfSteps: finalRun.num_of_steps,
-      hasResult: Boolean(finalRun.result),
-      hasError: Boolean(finalRun.error),
-    },
-    raw: {
-      finalRun,
-    },
-  });
-
-  if (finalRun.status === 'COMPLETED') {
-    await appendTimelineEvent({
-      runId: run.id,
-      actor: 'tinyfish',
-      phase: 'running_browser_qa',
-      status: 'completed',
-      title: 'TinyFish browser QA completed.',
-      data: {
-        tinyfishRunId: response.run_id,
-        steps: finalRun.num_of_steps,
-        streamId: event.id,
-      },
-    });
-    await recordBrowserObservation({
-      runId: run.id,
-      provider: 'tinyfish',
-      providerRunId: response.run_id,
-      status: 'passed',
-      severity: run.riskLevel,
-      expectedBehavior: run.flowGoal,
-      observedBehavior: 'TinyFish completed the requested browser flow.',
-      result: {
-        status: finalRun.status,
-        numOfSteps: finalRun.num_of_steps,
-      },
-      raw: {
-        result: finalRun.result,
-      },
-    });
-    await recordVerificationResult({
-      runId: run.id,
-      provider: 'tinyfish',
-      status: 'passed',
-      summary: 'TinyFish completed the live browser QA flow.',
-      artifacts: [
-        {
-          sponsor: 'tinyfish',
-          providerId: response.run_id,
-          type: 'agent_run_result',
-          redisStreamId: event.id,
-        },
-      ],
-      raw: {
-        finalRun,
-      },
-    });
-    await recordBenchmarkEvaluation({
-      runId: run.id,
-      sponsor: 'guildai',
-      benchmarkName: 'phase3_redis_driven_browser_qa_completion',
-      score: 1,
-      status: 'passed',
-      metrics: {
-        tinyfishStatus: finalRun.status,
-        numOfSteps: finalRun.num_of_steps,
-      },
-      raw: {
-        tinyfishRunId: response.run_id,
-        redisStreamId: event.id,
-      },
-    });
-    return { providerRunId: response.run_id, status: finalRun.status };
-  }
-
-  await appendTimelineEvent({
-    runId: run.id,
-    actor: 'tinyfish',
-    phase: 'running_browser_qa',
-    status: 'failed',
-    title: 'TinyFish browser QA did not complete successfully.',
-    data: {
-      tinyfishRunId: response.run_id,
-      tinyfishStatus: finalRun.status,
-      error: finalRun.error?.message,
       streamId: event.id,
     },
   });
-  await recordBrowserObservation({
+
+  const flow = await runAgentFlow({
     runId: run.id,
-    provider: 'tinyfish',
-    providerRunId: response.run_id,
-    status: finalRun.status === 'FAILED' ? 'failed' : 'errored',
-    severity: run.riskLevel,
-    expectedBehavior: run.flowGoal,
-    observedBehavior: finalRun.error?.message ?? `TinyFish ended with status ${finalRun.status}.`,
-    result: {
-      status: finalRun.status,
-      numOfSteps: finalRun.num_of_steps,
-    },
-    raw: {
-      result: finalRun.result,
-      error: finalRun.error,
-    },
+    previewUrl: run.previewUrl,
+    flowGoal: run.flowGoal,
+    maxAttempts: 2,
   });
-  await recordBugHypothesis({
+  await recordTinyFishAgentFlow(run, event, flow);
+
+  const localResult = await runLocalFlowTest({
     runId: run.id,
-    summary: 'TinyFish reported that the requested browser flow failed.',
-    affectedFlow: run.flowGoal,
-    suspectedCause: finalRun.error?.message ?? `TinyFish ended with status ${finalRun.status}.`,
-    confidence: finalRun.status === 'FAILED' ? 'high' : 'medium',
-    severity: run.riskLevel,
-    acceptanceCriteria: [
-      {
-        text: run.flowGoal,
-        source: 'dashboard_input',
-      },
-    ],
-    evidence: {
-      tinyfishRunId: response.run_id,
-      finalRun,
-      redisStreamId: event.id,
-    },
+    previewUrl: run.previewUrl,
+    flowGoal: run.flowGoal,
+    label: 'phase4-local-flow',
   });
-  await recordVerificationResult({
-    runId: run.id,
-    provider: 'tinyfish',
-    status: finalRun.status === 'FAILED' ? 'failed' : 'errored',
-    summary: finalRun.error?.message ?? `TinyFish ended with status ${finalRun.status}.`,
-    artifacts: [
-      {
-        sponsor: 'tinyfish',
-        providerId: response.run_id,
-        type: 'agent_run_result',
-        redisStreamId: event.id,
-      },
-    ],
-    raw: {
-      finalRun,
-    },
-  });
+  await recordPlaywrightEvidence(run, event, localResult);
+
+  await recordTinyFishBrowserSessionEvidence(run, event);
+
   await recordBenchmarkEvaluation({
     runId: run.id,
-    sponsor: 'guildai',
-    benchmarkName: 'phase3_redis_driven_browser_qa_completion',
-    score: 0,
-    status: finalRun.status === 'FAILED' ? 'failed' : 'errored',
+    sponsor: 'tinyfish',
+    benchmarkName: 'phase4_tinyfish_live_browser_qa',
+    score: flow.observation.passed ? 1 : 0,
+    status: flow.observation.passed ? 'passed' : 'failed',
     metrics: {
-      tinyfishStatus: finalRun.status,
-      numOfSteps: finalRun.num_of_steps,
+      tinyfishStatus: flow.status,
+      tinyfishAttempts: flow.attempts,
+      progressEvents: flow.progressEvents.length,
+      hasProviderRunId: Boolean(flow.providerRunId),
+      hasStreamingUrl: Boolean(flow.streamingUrl),
+      hasScreenshot: Boolean(flow.observation.screenshots[0] ?? localResult.screenshotUrl),
     },
     raw: {
-      tinyfishRunId: response.run_id,
-      error: finalRun.error,
-      redisStreamId: event.id,
+      flow,
+      localResult,
     },
   });
 
-  return { providerRunId: response.run_id, status: finalRun.status };
+  return {
+    providerRunId: flow.providerRunId,
+    status: String(flow.status),
+    tinyfishPassed: flow.observation.passed,
+    playwrightPassed: localResult.passed,
+    screenshotUrl: flow.observation.screenshots[0] ?? localResult.screenshotUrl,
+    traceUrl: localResult.traceUrl,
+    failureSummary: flow.observation.visibleError
+      ?? flow.observation.likelyRootCause
+      ?? localResult.visibleError
+      ?? localResult.likelyRootCause,
+  };
 }
 
 async function handleRunStarted(redis: RedisClientType, event: FlowPrRedisEvent): Promise<void> {
@@ -733,7 +915,7 @@ async function handleRunningBrowserQa(redis: RedisClientType, run: FlowPrRun, ev
   await updateRunStatus(run.id, 'running_browser_qa');
   await appendRedisTimeline(event, 'running_browser_qa', 'started', 'Redis state machine dispatched TinyFish browser QA.');
   await recordRedisArtifact(event, 'state_transition', { nextStatus: 'running_browser_qa' });
-  const outcome = await queueTinyFishRun(run, event);
+  const outcome = await runBrowserQa(run, event);
   const browserResultStreamId = await emitBrowserResult(redis, {
     runId: run.id,
     providerRunId: outcome.providerRunId,
@@ -748,7 +930,7 @@ async function handleRunningBrowserQa(redis: RedisClientType, run: FlowPrRun, ev
       stream: flowPrStreams.browserResults,
       eventType: 'browser.result',
     },
-    responseSummary: outcome,
+    responseSummary: { ...outcome },
     raw: {
       sourceStreamId: event.id,
       outcome,
@@ -757,6 +939,8 @@ async function handleRunningBrowserQa(redis: RedisClientType, run: FlowPrRun, ev
   await persistRedisState(redis, event, 'running_browser_qa', {
     browserResultStreamId,
     tinyfishRunId: outcome.providerRunId,
+    screenshotUrl: outcome.screenshotUrl,
+    traceUrl: outcome.traceUrl,
   });
   await emitNextStep(redis, event, 'collecting_visual_evidence', 'Browser QA result event has been published.');
 }
@@ -999,11 +1183,16 @@ async function handleRunningLiveVerification(
 ): Promise<void> {
   await updateRunStatus(run.id, 'running_live_verification');
   const verificationResults = await listVerificationResults(run.id);
-  const hasPassingLiveVerification = verificationResults.some((result) => result.status === 'passed');
-  const status = hasPassingLiveVerification ? 'passed' : 'skipped';
-  const summary = hasPassingLiveVerification
-    ? 'Redis verified that live browser evidence has a passing result.'
-    : 'Redis verified the runtime path; no passing live browser result is available yet.';
+  const hasBrowserFailure = verificationResults.some((result) => ['tinyfish', 'playwright'].includes(result.provider)
+    && ['failed', 'errored'].includes(result.status));
+  const hasPassingLiveVerification = verificationResults.some((result) => ['tinyfish', 'playwright'].includes(result.provider)
+    && result.status === 'passed');
+  const status = hasBrowserFailure ? 'failed' : hasPassingLiveVerification ? 'passed' : 'skipped';
+  const summary = hasBrowserFailure
+    ? 'Redis verified that live browser evidence contains a failing result.'
+    : hasPassingLiveVerification
+      ? 'Redis verified that live browser evidence has a passing result.'
+      : 'Redis verified the runtime path; no live browser result is available yet.';
 
   await recordVerificationResult({
     runId: run.id,

@@ -149,6 +149,22 @@ export interface BrowserObservation {
   createdAt: string;
 }
 
+export interface BrowserObservationResult {
+  provider: BrowserObservationProvider;
+  providerRunId?: string;
+  passed: boolean;
+  failedStep?: string;
+  visibleError?: string;
+  finalUrl: string;
+  screenshotUrls: string[];
+  traceUrl?: string;
+  consoleErrors: string[];
+  networkErrors: Array<{ url: string; status?: number; method?: string }>;
+  domFindings: string[];
+  likelyRootCause?: string;
+  confidence: number;
+}
+
 export type HypothesisConfidence = 'low' | 'medium' | 'high';
 
 export interface BugHypothesis {

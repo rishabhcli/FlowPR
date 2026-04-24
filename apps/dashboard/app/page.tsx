@@ -286,14 +286,37 @@ export default function DashboardPage() {
                 </section>
                 <section>
                   <h3>Browser Evidence</h3>
-                  <ul>
+                  <ul className="browser-evidence-list">
                     {runDetail.browserObservations.map((observation) => (
-                      <li key={observation.id}>
-                        <strong>{observation.provider}</strong>
-                        <span>{observation.status}</span>
+                      <li className={`browser-evidence ${observation.status}`} key={observation.id}>
+                        <div className="browser-evidence-header">
+                          <strong>{observation.provider}</strong>
+                          <code>{observation.status}</code>
+                        </div>
+                        <span>{observation.failedStep ?? 'full flow'}</span>
+                        <p>{observation.observedBehavior ?? 'Evidence recorded.'}</p>
+                        <div className="evidence-links">
+                          {observation.screenshotUrl && (
+                            <a href={observation.screenshotUrl} rel="noreferrer" target="_blank">
+                              Screenshot
+                            </a>
+                          )}
+                          {observation.traceUrl && (
+                            <a href={observation.traceUrl} rel="noreferrer" target="_blank">
+                              Trace
+                            </a>
+                          )}
+                        </div>
                         <code>{observation.providerRunId ?? observation.severity}</code>
                       </li>
                     ))}
+                    {runDetail.browserObservations.length === 0 && (
+                      <li>
+                        <strong>Waiting</strong>
+                        <span>No TinyFish or Playwright browser evidence yet.</span>
+                        <code>queued</code>
+                      </li>
+                    )}
                   </ul>
                 </section>
                 <section>
