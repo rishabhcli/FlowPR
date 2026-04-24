@@ -11,6 +11,8 @@ interface BeforeAfterProps {
   className?: string;
 }
 
+// URLs passed in are already proxy URLs built by the caller via artifactSrc().
+
 export function BeforeAfter({ before, after, className }: BeforeAfterProps) {
   return (
     <div className={cn('grid gap-4 md:grid-cols-2', className)}>

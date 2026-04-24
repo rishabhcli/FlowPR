@@ -462,6 +462,42 @@ export async function getInsForgeClient(): Promise<InsForgeClient> {
   return cachedClient;
 }
 
+export interface DownloadRunArtifactResult {
+  bytes: Uint8Array;
+  contentType: string;
+  cacheControl?: string;
+}
+
+export async function downloadRunArtifact(
+  keyOrUrl: string,
+): Promise<DownloadRunArtifactResult> {
+  const { baseUrl, anonKey } = getInsForgeConfig();
+  const trimmedBase = baseUrl.replace(/\/+$/, '');
+  const url = /^https?:\/\//i.test(keyOrUrl)
+    ? keyOrUrl
+    : `${trimmedBase}/api/storage/buckets/${artifactStorageBucket}/objects/${encodeURIComponent(keyOrUrl)}`;
+
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${anonKey}`,
+      'x-api-key': anonKey,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `downloadRunArtifact failed: ${response.status} ${response.statusText}`,
+    );
+  }
+
+  const buffer = await response.arrayBuffer();
+  return {
+    bytes: new Uint8Array(buffer),
+    contentType: response.headers.get('content-type') ?? 'application/octet-stream',
+    cacheControl: response.headers.get('cache-control') ?? undefined,
+  };
+}
+
 export async function uploadRunArtifact(input: RunArtifactUploadInput): Promise<RunArtifactUploadResult> {
   const client = await getInsForgeClient();
   let blobPart: BlobPart;

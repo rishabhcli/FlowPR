@@ -35,6 +35,204 @@ export const redisLockKeys = {
   pr: (runId: string) => `flowpr:locks:pr:${runId}`,
 } as const;
 
+export const redisWorkerKeys = {
+  heartbeat: (workerId: string) => `flowpr:worker:heartbeat:${workerId}`,
+  heartbeatPattern: 'flowpr:worker:heartbeat:*',
+} as const;
+
+export const redisProgressKeys = {
+  stream: (runId: string) => `flowpr:progress:${runId}`,
+  liveStreams: (runId: string) => `flowpr:live:streams:${runId}`,
+} as const;
+
+export async function writeLiveStream(
+  client: RedisClientType,
+  input: { runId: string; provider: string; providerRunId?: string; streamingUrl: string },
+  ttlSeconds = 900,
+): Promise<void> {
+  const key = redisProgressKeys.liveStreams(input.runId);
+  const field = input.providerRunId ? `${input.provider}:${input.providerRunId}` : input.provider;
+  await client.hSet(key, field, JSON.stringify({
+    provider: input.provider,
+    providerRunId: input.providerRunId,
+    streamingUrl: input.streamingUrl,
+    createdAt: nowIso(),
+  }));
+  await client.expire(key, ttlSeconds);
+}
+
+export async function readLiveStreams(
+  client: RedisClientType,
+  runId: string,
+): Promise<Array<{ provider: string; providerRunId?: string; streamingUrl: string; createdAt: string }>> {
+  const raw = await client.hGetAll(redisProgressKeys.liveStreams(runId));
+  const entries: Array<{ provider: string; providerRunId?: string; streamingUrl: string; createdAt: string }> = [];
+  for (const value of Object.values(raw)) {
+    try {
+      const parsed = JSON.parse(String(value));
+      if (parsed && typeof parsed === 'object' && typeof parsed.streamingUrl === 'string') {
+        entries.push({
+          provider: String(parsed.provider ?? 'unknown'),
+          providerRunId: parsed.providerRunId ? String(parsed.providerRunId) : undefined,
+          streamingUrl: String(parsed.streamingUrl),
+          createdAt: String(parsed.createdAt ?? nowIso()),
+        });
+      }
+    } catch {
+      // ignore malformed entries
+    }
+  }
+  return entries;
+}
+
+export async function clearLiveStreams(client: RedisClientType, runId: string): Promise<void> {
+  await client.del(redisProgressKeys.liveStreams(runId));
+}
+
+export interface WorkerHeartbeat {
+  workerId: string;
+  lastBeat: string;
+  pid?: string;
+  processed?: number;
+  currentRunId?: string;
+  currentPhase?: string;
+}
+
+export async function writeWorkerHeartbeat(
+  client: RedisClientType,
+  input: {
+    workerId: string;
+    pid?: string | number;
+    processed?: number;
+    currentRunId?: string;
+    currentPhase?: string;
+  },
+  ttlSeconds = 15,
+): Promise<void> {
+  const key = redisWorkerKeys.heartbeat(input.workerId);
+  await client.hSet(
+    key,
+    compactFields({
+      workerId: input.workerId,
+      lastBeat: nowIso(),
+      pid: input.pid,
+      processed: input.processed,
+      currentRunId: input.currentRunId,
+      currentPhase: input.currentPhase,
+    }),
+  );
+  await client.expire(key, ttlSeconds);
+}
+
+export async function listWorkerHeartbeats(client: RedisClientType): Promise<WorkerHeartbeat[]> {
+  const heartbeats: WorkerHeartbeat[] = [];
+  let cursor: string | number = 0;
+
+  do {
+    const response = await client.sendCommand([
+      'SCAN',
+      String(cursor),
+      'MATCH',
+      redisWorkerKeys.heartbeatPattern,
+      'COUNT',
+      '50',
+    ]) as [string, string[]];
+
+    cursor = response[0];
+    const keys = response[1] ?? [];
+
+    for (const key of keys) {
+      const record = normalizeMessage(await client.hGetAll(key));
+      if (!record.workerId) continue;
+      heartbeats.push({
+        workerId: record.workerId,
+        lastBeat: record.lastBeat || nowIso(),
+        pid: record.pid || undefined,
+        processed: record.processed ? Number(record.processed) : undefined,
+        currentRunId: record.currentRunId || undefined,
+        currentPhase: record.currentPhase || undefined,
+      });
+    }
+  } while (String(cursor) !== '0');
+
+  return heartbeats.sort((a, b) => a.workerId.localeCompare(b.workerId));
+}
+
+export async function emitProgressEvent(
+  client: RedisClientType,
+  input: {
+    runId: string;
+    kind: string;
+    actor?: string;
+    phase?: string;
+    message: string;
+    extra?: Record<string, string | number | boolean | undefined>;
+  },
+  ttlSeconds = 3600,
+): Promise<string> {
+  const key = redisProgressKeys.stream(input.runId);
+  const streamId = await client.xAdd(
+    key,
+    '*',
+    compactFields({
+      runId: input.runId,
+      kind: input.kind,
+      actor: input.actor,
+      phase: input.phase,
+      message: input.message,
+      createdAt: nowIso(),
+      ...(input.extra ?? {}),
+    }),
+  );
+  await client.expire(key, ttlSeconds);
+  return streamId;
+}
+
+export async function readProgressEvents(
+  client: RedisClientType,
+  runId: string,
+  options: { from?: string; blockMs?: number; count?: number } = {},
+): Promise<Array<{ id: string; fields: Record<string, string> }>> {
+  const response = await client.xRead(
+    [{ key: redisProgressKeys.stream(runId), id: options.from ?? '$' }],
+    { BLOCK: options.blockMs ?? 30000, COUNT: options.count ?? 100 },
+  );
+  if (!response) return [];
+  const streams = response as Array<{
+    name: string;
+    messages: Array<{ id: string; message: Record<string, string> }>;
+  }>;
+  return streams.flatMap((stream) =>
+    stream.messages.map((entry) => ({ id: entry.id, fields: normalizeMessage(entry.message) })),
+  );
+}
+
+export async function getProgressHistory(
+  client: RedisClientType,
+  runId: string,
+  count = 50,
+): Promise<Array<{ id: string; fields: Record<string, string> }>> {
+  const response = await client.sendCommand([
+    'XRANGE',
+    redisProgressKeys.stream(runId),
+    '-',
+    '+',
+    'COUNT',
+    String(count),
+  ]);
+  return parseXRangeResponse(response).map((entry) => ({ id: entry.id, fields: entry.message }));
+}
+
+export async function listDeadLetterEntries(
+  client: RedisClientType,
+  count = 20,
+): Promise<Array<{ id: string; fields: Record<string, string> }>> {
+  return (await listRedisStreamEntries(client, flowPrStreams.deadLetter, count)).map((entry) => ({
+    id: entry.id,
+    fields: entry.message,
+  }));
+}
+
 export type RunEventType = 'run.started';
 export type AgentStepEventType = 'agent.step';
 export type BrowserResultEventType = 'browser.result';

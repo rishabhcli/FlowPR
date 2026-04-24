@@ -1,4 +1,5 @@
 export * from './env';
+export * from './failure-classifier';
 export * from './github';
 export * from './guildai';
 export * from './insforge';

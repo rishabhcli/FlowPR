@@ -40,7 +40,9 @@ import {
   type SponsorStatus,
 } from '@/components/flowpr/sponsor-rail';
 import { StateBadge } from '@/components/flowpr/state-badge';
+import { DeadLetterStrip } from '@/components/flowpr/dead-letter-strip';
 import { formatDateTime } from '@/lib/format';
+import { useRunStream } from '@/lib/use-run-stream';
 
 interface ValidationIssue {
   field: string;
@@ -126,13 +128,31 @@ export default function DashboardPage() {
     });
     loadReadiness(selectedRunId).catch(() => undefined);
 
+    // SSE drives most updates; the low-cadence poll is a safety net for the list + readiness view.
     const interval = window.setInterval(() => {
       loadRunDetail(selectedRunId).catch(() => undefined);
       loadReadiness(selectedRunId).catch(() => undefined);
       loadRuns().catch(() => undefined);
-    }, 5000);
+    }, 15000);
     return () => window.clearInterval(interval);
   }, [selectedRunId]);
+
+  const runStream = useRunStream(selectedRunId);
+
+  useEffect(() => {
+    if (!selectedRunId || runStream.progress.length === 0) return;
+    loadRunDetail(selectedRunId).catch(() => undefined);
+    loadReadiness(selectedRunId).catch(() => undefined);
+
+  }, [selectedRunId, runStream.progress.length]);
+
+  const liveStreamByProvider = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const entry of runStream.liveStreams) {
+      map[entry.provider] = entry.streamingUrl;
+    }
+    return map;
+  }, [runStream.liveStreams]);
 
   const liveSponsors = useMemo(
     () => sponsorStatuses.filter((s) => s.state === 'live').length,
@@ -249,6 +269,8 @@ export default function DashboardPage() {
               className="max-w-sm"
             />
           </section>
+
+          <DeadLetterStrip className="mb-4" />
 
           {error && (
             <Alert variant="destructive" className="mb-4">
@@ -374,16 +396,20 @@ export default function DashboardPage() {
                       <TabsContent value="evidence" className="space-y-4">
                         <div className="grid gap-4 md:grid-cols-3">
                           <EvidenceCard
+                            runId={run.id}
                             observation={tinyfishAgent}
                             label="TinyFish Agent"
                             description="Streaming agent with stealth profile"
+                            liveStreamingUrl={liveStreamByProvider.tinyfish}
                           />
                           <EvidenceCard
+                            runId={run.id}
                             observation={tinyfishRemote}
                             label="TinyFish Browser"
                             description="Remote CDP session"
                           />
                           <EvidenceCard
+                            runId={run.id}
                             observation={playwrightLocal}
                             label="Local Playwright"
                             description="Mobile viewport 390×844"

@@ -13,6 +13,7 @@ export interface TinyFishAgentFlowInput {
   flowGoal: string;
   maxAttempts?: number;
   timeoutMs?: number;
+  onProgress?: (event: TinyFishProgressEvent) => void | Promise<void>;
 }
 
 export interface TinyFishProgressEvent {
@@ -232,31 +233,47 @@ export async function runAgentFlow(input: TinyFishAgentFlowInput): Promise<TinyF
           signal: controller.signal,
           onStarted: (event) => {
             providerRunId = event.run_id;
-            progressEvents.push({ type: event.type, runId: event.run_id, timestamp: event.timestamp });
+            const normalized: TinyFishProgressEvent = {
+              type: event.type,
+              runId: event.run_id,
+              timestamp: event.timestamp,
+            };
+            progressEvents.push(normalized);
+            void input.onProgress?.(normalized);
           },
           onStreamingUrl: (event) => {
             providerRunId = event.run_id;
             streamingUrl = event.streaming_url;
-            progressEvents.push({
+            const normalized: TinyFishProgressEvent = {
               type: event.type,
               runId: event.run_id,
               streamingUrl: event.streaming_url,
               timestamp: event.timestamp,
-            });
+            };
+            progressEvents.push(normalized);
+            void input.onProgress?.(normalized);
           },
           onProgress: (event) => {
             providerRunId = event.run_id;
-            progressEvents.push({
+            const normalized: TinyFishProgressEvent = {
               type: event.type,
               runId: event.run_id,
               purpose: event.purpose,
               timestamp: event.timestamp,
-            });
+            };
+            progressEvents.push(normalized);
+            void input.onProgress?.(normalized);
           },
           onComplete: (event) => {
             providerRunId = event.run_id;
             completeEvent = event;
-            progressEvents.push({ type: event.type, runId: event.run_id, timestamp: event.timestamp });
+            const normalized: TinyFishProgressEvent = {
+              type: event.type,
+              runId: event.run_id,
+              timestamp: event.timestamp,
+            };
+            progressEvents.push(normalized);
+            void input.onProgress?.(normalized);
           },
         },
       );

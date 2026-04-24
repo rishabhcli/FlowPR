@@ -1,5 +1,10 @@
 import { NextResponse } from 'next/server';
-import { getRunDetail } from '@flowpr/tools';
+import {
+  connectFlowPrRedisClient,
+  createFlowPrRedisClient,
+  getRunDetail,
+  readLiveStreams,
+} from '@flowpr/tools';
 
 export const runtime = 'nodejs';
 
@@ -16,7 +21,20 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       return NextResponse.json({ error: 'Run not found' }, { status: 404 });
     }
 
-    return NextResponse.json(detail);
+    let liveStreams: Array<{ provider: string; providerRunId?: string; streamingUrl: string; createdAt: string }> = [];
+    const redis = createFlowPrRedisClient();
+    try {
+      await connectFlowPrRedisClient(redis);
+      liveStreams = await readLiveStreams(redis, id);
+    } catch {
+      // Redis is optional enrichment; don't fail the detail fetch.
+    } finally {
+      if (redis.isOpen) {
+        await redis.quit().catch(() => undefined);
+      }
+    }
+
+    return NextResponse.json({ ...detail, liveStreams });
   } catch (error) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
   }

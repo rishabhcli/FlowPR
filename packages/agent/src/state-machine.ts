@@ -37,11 +37,13 @@ import {
   recordProviderArtifact,
   recordPullRequest,
   recordVerificationResult,
+  emitProgressEvent,
   redisLockKeys,
   redisMemoryKeys,
   releaseRedisLock,
   runAgentFlow,
   startIdempotentOperation,
+  writeLiveStream,
   storeBugSignatureMemory,
   storeSuccessfulPatchMemory,
   terminateBrowserSession,
@@ -216,6 +218,15 @@ async function emitNextStep(
     reason,
     previousStreamId: sourceEvent.id,
   });
+
+  await emitProgressEvent(redis, {
+    runId: sourceEvent.runId,
+    kind: 'phase_transition',
+    actor: 'redis',
+    phase,
+    message: `Moving on to ${runStatusLabels[phase] ?? phase}.`,
+    extra: { streamId, reason },
+  }).catch(() => undefined);
 
   await appendTimelineEvent({
     runId: sourceEvent.runId,
@@ -794,6 +805,7 @@ async function recordTinyFishBrowserSessionEvidence(
 }
 
 async function runBrowserQa(
+  redis: RedisClientType,
   run: FlowPrRun,
   event: FlowPrRedisEvent,
 ): Promise<BrowserQaOutcome> {
@@ -832,6 +844,33 @@ async function runBrowserQa(
     previewUrl: run.previewUrl,
     flowGoal: run.flowGoal,
     maxAttempts: 2,
+    onProgress: (progressEvent) => {
+      const eventType = progressEvent.type;
+      if (progressEvent.streamingUrl) {
+        void writeLiveStream(redis, {
+          runId: run.id,
+          provider: 'tinyfish',
+          providerRunId: progressEvent.runId,
+          streamingUrl: progressEvent.streamingUrl,
+        }).catch(() => undefined);
+      }
+      void emitProgressEvent(redis, {
+        runId: run.id,
+        kind: 'browser_step',
+        actor: 'tinyfish',
+        phase: 'running_browser_qa',
+        message:
+          progressEvent.purpose ??
+          (progressEvent.streamingUrl
+            ? 'TinyFish browser session is live.'
+            : `TinyFish ${String(eventType).toLowerCase()}`),
+        extra: {
+          eventType: String(eventType),
+          providerRunId: progressEvent.runId,
+          streamingUrl: progressEvent.streamingUrl,
+        },
+      }).catch(() => undefined);
+    },
   });
   await recordTinyFishAgentFlow(run, event, flow);
 
@@ -955,7 +994,7 @@ async function handleRunningBrowserQa(redis: RedisClientType, run: FlowPrRun, ev
   await updateRunStatus(run.id, 'running_browser_qa');
   await appendRedisTimeline(event, 'running_browser_qa', 'started', 'Opening the app in a real browser and trying the user journey.');
   await recordRedisArtifact(event, 'state_transition', { nextStatus: 'running_browser_qa' });
-  const outcome = await runBrowserQa(run, event);
+  const outcome = await runBrowserQa(redis, run, event);
   const browserResultStreamId = await emitBrowserResult(redis, {
     runId: run.id,
     providerRunId: outcome.providerRunId,

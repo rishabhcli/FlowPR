@@ -14,6 +14,7 @@ import {
   retryRedisEvent,
   updateAgentSessionsForRun,
   updateRunStatus,
+  writeWorkerHeartbeat,
   type FlowPrRedisEvent,
 } from '@flowpr/tools';
 import { describeRedisEventFailure, processRedisEvent } from './state-machine';
@@ -159,12 +160,21 @@ async function main() {
   const once = process.argv.includes('--once');
   const consumerName = process.env.FLOWPR_WORKER_ID ?? `worker-${process.pid}`;
 
+  let processed = 0;
+
   try {
     await connectFlowPrRedisClient(redis);
     await ensureFlowPrConsumerGroups(redis);
+    await writeWorkerHeartbeat(redis, { workerId: consumerName, pid: process.pid, processed });
     console.log(`FlowPR Redis worker listening as ${consumerName}`);
 
     while (true) {
+      await writeWorkerHeartbeat(redis, {
+        workerId: consumerName,
+        pid: process.pid,
+        processed,
+      }).catch(() => undefined);
+
       const reclaimedEvents = await claimStaleEvents(redis, consumerName, {
         minIdleMs: 30000,
         count: 5,
@@ -186,9 +196,18 @@ async function main() {
       }
 
       for (const event of events) {
+        await writeWorkerHeartbeat(redis, {
+          workerId: consumerName,
+          pid: process.pid,
+          processed,
+          currentRunId: event.runId,
+          currentPhase: event.phase,
+        }).catch(() => undefined);
+
         try {
           await processRedisEvent({ redis, event, consumerName });
           await ackEvent(redis, event);
+          processed += 1;
           console.log(JSON.stringify({
             component: 'flowpr-worker',
             event: 'processed',

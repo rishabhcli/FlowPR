@@ -25,6 +25,7 @@ import { Button } from '@/components/ui/button';
 import { SiteHeader } from '@/components/flowpr/site-header';
 import { PhaseStepper } from '@/components/flowpr/phase-stepper';
 import { BeforeAfter } from '@/components/flowpr/before-after';
+import { artifactSrc } from '@/lib/artifact-url';
 import { DiagnosisCard } from '@/components/flowpr/diagnosis-card';
 import { PatchCard } from '@/components/flowpr/patch-card';
 import { PrCard } from '@/components/flowpr/pr-card';
@@ -223,19 +224,27 @@ export default function DemoPage() {
                   </CardHeader>
                   <CardContent>
                     <BeforeAfter
-                      before={
-                        beforeObservation?.screenshotUrl
+                      before={(() => {
+                        if (!beforeObservation) return null;
+                        const src = artifactSrc(detail.run.id, {
+                          key: beforeObservation.screenshotKey,
+                          url: beforeObservation.screenshotUrl,
+                        });
+                        return src
                           ? {
-                              url: beforeObservation.screenshotUrl,
+                              url: src,
                               caption: beforeObservation.failedStep ?? 'Failure',
                             }
-                          : null
-                      }
-                      after={
-                        afterObservation?.screenshotUrl
-                          ? { url: afterObservation.screenshotUrl, caption: 'Verified fix' }
-                          : null
-                      }
+                          : null;
+                      })()}
+                      after={(() => {
+                        if (!afterObservation) return null;
+                        const src = artifactSrc(detail.run.id, {
+                          key: afterObservation.screenshotKey,
+                          url: afterObservation.screenshotUrl,
+                        });
+                        return src ? { url: src, caption: 'Verified fix' } : null;
+                      })()}
                     />
                   </CardContent>
                 </Card>

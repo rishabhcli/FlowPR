@@ -1,15 +1,18 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import {
   Activity,
   AlertTriangle,
   Box,
   CheckCircle2,
   Clock,
+  Cpu,
   Key,
   Loader2,
   Radio,
+  Siren,
   XCircle,
 } from 'lucide-react';
 
@@ -33,19 +36,67 @@ interface HealthResponse {
   generatedAt: string;
 }
 
+interface WorkerStatus {
+  workerId: string;
+  lastBeat: string;
+  pid?: string;
+  processed?: number;
+  currentRunId?: string;
+  currentPhase?: string;
+  ageMs: number;
+  alive: boolean;
+}
+
+interface WorkerStatusResponse {
+  workers: WorkerStatus[];
+  aliveCount: number;
+  generatedAt: string;
+  error?: string;
+}
+
+interface DeadLetterEntry {
+  id: string;
+  runId: string;
+  sourceStream?: string;
+  eventType?: string;
+  phase?: string;
+  attempt?: number;
+  error?: string;
+  createdAt?: string;
+}
+
+interface DeadLetterResponse {
+  entries: DeadLetterEntry[];
+  count: number;
+  generatedAt: string;
+  error?: string;
+}
+
 export default function HealthPage() {
   const [data, setData] = useState<HealthResponse | null>(null);
+  const [workers, setWorkers] = useState<WorkerStatusResponse | null>(null);
+  const [deadLetter, setDeadLetter] = useState<DeadLetterResponse | null>(null);
   const [error, setError] = useState<string>();
 
   async function load() {
     setError(undefined);
-    const response = await fetch('/api/health', { cache: 'no-store' });
-    const body = await response.json();
-    if (!response.ok) {
-      setError(body.error ?? `Health endpoint returned ${response.status}`);
+    const [healthResponse, workersResponse, deadLetterResponse] = await Promise.all([
+      fetch('/api/health', { cache: 'no-store' }),
+      fetch('/api/workers/status', { cache: 'no-store' }),
+      fetch('/api/dead-letter?count=20', { cache: 'no-store' }),
+    ]);
+    const body = await healthResponse.json();
+    if (!healthResponse.ok) {
+      setError(body.error ?? `Health endpoint returned ${healthResponse.status}`);
       return;
     }
     setData(body);
+    if (workersResponse.ok) {
+      setWorkers(await workersResponse.json());
+    }
+    if (deadLetterResponse.ok) {
+      setDeadLetter(await deadLetterResponse.json());
+    }
   }
 
   useEffect(() => {
@@ -110,7 +161,7 @@ export default function HealthPage() {
 
           {data && (
             <>
-              <section className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <section className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
                 <MetricTile
                   label="Env configured"
                   value={`${counts.configured}/${counts.envTotal}`}
@@ -133,6 +184,19 @@ export default function HealthPage() {
                   caption={data.streams.length > 0 ? 'Consumer groups OK' : 'No streams detected'}
                 />
                 <MetricTile
+                  label="Workers alive"
+                  value={workers?.aliveCount ?? 0}
+                  tone={
+                    workers === null ? 'muted' : workers.aliveCount > 0 ? 'success' : 'danger'
+                  }
+                  icon={<Cpu className="h-5 w-5" />}
+                  caption={
+                    workers && workers.workers.length > 0
+                      ? `${workers.workers.length} tracked`
+                      : 'No heartbeats seen'
+                  }
+                />
+                <MetricTile
                   label="Last check"
                   value={formatRelativeTime(data.generatedAt)}
                   tone="info"
@@ -140,6 +204,109 @@ export default function HealthPage() {
                   caption="Auto-refresh every 15s"
                 />
               </section>
+
+              {deadLetter && deadLetter.entries.length > 0 && (
+                <Card className="mb-6 border-destructive/40 bg-destructive/5">
+                  <CardHeader className="pb-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <CardTitle className="flex items-center gap-2 text-sm uppercase tracking-wide text-destructive">
+                        <Siren className="h-4 w-4" /> Dead letter
+                      </CardTitle>
+                      <span className="text-[11px] text-muted-foreground">
+                        {deadLetter.count} entries
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Events the worker couldn&apos;t process after 3 attempts. These runs are stuck.
+                    </p>
+                  </CardHeader>
+                  <CardContent>
+                    <ul className="space-y-2">
+                      {deadLetter.entries.slice(0, 8).map((entry) => (
+                        <li
+                          key={entry.id}
+                          className="flex items-start justify-between gap-3 rounded-md border border-destructive/20 bg-card/60 p-3"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs font-medium text-foreground">
+                              {entry.phase ? entry.phase.replace(/_/g, ' ') : entry.eventType ?? 'unknown'}
+                              {entry.attempt && ` · attempt ${entry.attempt}`}
+                            </p>
+                            {entry.error && (
+                              <p className="mt-0.5 line-clamp-2 font-mono text-[11px] text-destructive">
+                                {entry.error}
+                              </p>
+                            )}
+                            <p className="mt-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                              {entry.sourceStream}
+                              {entry.createdAt && ` · ${formatRelativeTime(entry.createdAt)}`}
+                            </p>
+                          </div>
+                          {entry.runId && (
+                            <Link
+                              href={`/runs/${entry.runId}`}
+                              className="shrink-0 self-center font-mono text-[11px] text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                            >
+                              {entry.runId.slice(0, 8)}
+                            </Link>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </CardContent>
+                </Card>
+              )}
+
+              {workers && workers.workers.length > 0 && (
+                <Card className="mb-6">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-sm uppercase tracking-wide text-muted-foreground">
+                      Workers
+                    </CardTitle>
+                    <p className="text-xs text-muted-foreground">
+                      Redis heartbeats from the consumer group. Dead workers drop off after 15s.
+                    </p>
+                  </CardHeader>
+                  <CardContent>
+                    <ul className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
+                      {workers.workers.map((worker) => (
+                        <li
+                          key={worker.workerId}
+                          className="flex items-start justify-between gap-3 rounded-md border border-border bg-card/40 p-3"
+                        >
+                          <div className="min-w-0">
+                            <p className="font-mono text-xs text-foreground">{worker.workerId}</p>
+                            <p className="mt-0.5 text-[11px] text-muted-foreground">
+                              last beat {formatRelativeTime(worker.lastBeat)}
+                              {typeof worker.processed !== 'undefined' && ` · ${worker.processed} processed`}
+                            </p>
+                            {worker.currentRunId && (
+                              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                                on run {worker.currentRunId.slice(0, 8)}
+                                {worker.currentPhase && ` · ${worker.currentPhase.replace(/_/g, ' ')}`}
+                              </p>
+                            )}
+                          </div>
+                          <span
+                            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide ${
+                              worker.alive
+                                ? 'border-success/30 bg-success/10 text-success'
+                                : 'border-destructive/30 bg-destructive/10 text-destructive'
+                            }`}
+                          >
+                            <span
+                              className={`h-1.5 w-1.5 rounded-full ${
+                                worker.alive ? 'animate-pulse bg-success' : 'bg-destructive'
+                              }`}
+                            />
+                            {worker.alive ? 'alive' : 'stale'}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </CardContent>
+                </Card>
+              )}
 
               <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)_minmax(0,1fr)]">
                 <Card>

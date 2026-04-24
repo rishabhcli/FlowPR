@@ -25,6 +25,10 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { SiteHeader } from '@/components/flowpr/site-header';
 import { PhaseStepper } from '@/components/flowpr/phase-stepper';
 import { BeforeAfter } from '@/components/flowpr/before-after';
+import { LiveProgress } from '@/components/flowpr/live-progress';
+import { ResourceTiles } from '@/components/flowpr/resource-tiles';
+import { artifactSrc } from '@/lib/artifact-url';
+import { useRunStream } from '@/lib/use-run-stream';
 import { DiagnosisCard } from '@/components/flowpr/diagnosis-card';
 import { PatchCard } from '@/components/flowpr/patch-card';
 import { PrCard } from '@/components/flowpr/pr-card';
@@ -100,11 +104,22 @@ export default function RunDetailPage({
     load().catch((err: unknown) =>
       setError(err instanceof Error ? err.message : String(err)),
     );
+    // SSE stream handles most updates; keep a low-cadence poll as a safety net.
     const interval = window.setInterval(() => {
       load().catch(() => undefined);
-    }, 5000);
+    }, 20000);
     return () => window.clearInterval(interval);
   }, [id]);
+
+  const runStream = useRunStream(id);
+
+  // Any progress event coming in via SSE is a signal to refresh the detail snapshot.
+  useEffect(() => {
+    if (runStream.progress.length === 0) return;
+    load().catch(() => undefined);
+    // We depend only on the length, not the full array, to avoid running on every new event.
+
+  }, [runStream.progress.length]);
 
   if (error) {
     return (
@@ -140,12 +155,15 @@ export default function RunDetailPage({
   }
 
   const { run } = detail;
-  const beforeObservation = detail.browserObservations.find(
-    (obs) => obs.status === 'failed' || obs.status === 'errored',
-  );
-  const afterObservation = detail.browserObservations.find(
-    (obs) => obs.status === 'passed',
-  );
+  const hasScreenshot = (obs: (typeof detail.browserObservations)[number]) =>
+    Boolean(obs.screenshotKey || obs.screenshotUrl);
+  const beforeObservation =
+    detail.browserObservations.find(
+      (obs) => (obs.status === 'failed' || obs.status === 'errored') && hasScreenshot(obs),
+    ) ?? detail.browserObservations.find((obs) => obs.status === 'failed' || obs.status === 'errored');
+  const afterObservation =
+    detail.browserObservations.find((obs) => obs.status === 'passed' && hasScreenshot(obs)) ??
+    detail.browserObservations.find((obs) => obs.status === 'passed');
   const latestHypothesis = detail.bugHypotheses[detail.bugHypotheses.length - 1];
   const latestPatch = detail.patches[detail.patches.length - 1];
   const latestPR = detail.pullRequests[detail.pullRequests.length - 1];
@@ -230,6 +248,8 @@ export default function RunDetailPage({
               </CardContent>
             </Card>
 
+            <ResourceTiles detail={detail} />
+
             {rerunMessage && (
               <Alert variant="default">
                 <AlertDescription>{rerunMessage}</AlertDescription>
@@ -255,22 +275,29 @@ export default function RunDetailPage({
                 </CardHeader>
                 <CardContent>
                   <BeforeAfter
-                    before={
-                      beforeObservation?.screenshotUrl
-                        ? {
+                    before={(() => {
+                      const src = beforeObservation
+                        ? artifactSrc(run.id, {
+                            key: beforeObservation.screenshotKey,
                             url: beforeObservation.screenshotUrl,
-                            caption: beforeObservation.failedStep ?? 'Failing run',
-                          }
-                        : null
-                    }
-                    after={
-                      afterObservation?.screenshotUrl
+                          })
+                        : undefined;
+                      return src
                         ? {
-                            url: afterObservation.screenshotUrl,
-                            caption: 'Verified fix',
+                            url: src,
+                            caption: beforeObservation?.failedStep ?? 'Failing run',
                           }
-                        : null
-                    }
+                        : null;
+                    })()}
+                    after={(() => {
+                      const src = afterObservation
+                        ? artifactSrc(run.id, {
+                            key: afterObservation.screenshotKey,
+                            url: afterObservation.screenshotUrl,
+                          })
+                        : undefined;
+                      return src ? { url: src, caption: 'Verified fix' } : null;
+                    })()}
                   />
                 </CardContent>
               </Card>
@@ -338,6 +365,7 @@ export default function RunDetailPage({
             </div>
 
             <aside className="space-y-6 lg:sticky lg:top-20 lg:self-start">
+              <LiveProgress progress={runStream.progress} connected={runStream.connected} />
               <ReadinessMeter readiness={readiness} />
 
               <Card>
