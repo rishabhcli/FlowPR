@@ -33,9 +33,10 @@ export function RunList({
   }
 
   return (
-    <ul className={cn('divide-y divide-border/60 overflow-hidden rounded-md border border-border', className)}>
+      <ul className={cn('divide-y divide-border/60 overflow-hidden rounded-md border border-border', className)}>
       {runs.slice(0, maxItems).map((run) => {
         const isSelected = run.id === selectedRunId;
+        const href = `/runs/${run.id}`;
         const content = (
           <div
             className={cn(
@@ -62,23 +63,13 @@ export function RunList({
           </div>
         );
 
-        if (onSelect) {
-          return (
-            <li key={run.id}>
-              <button
-                type="button"
-                onClick={() => onSelect(run.id)}
-                className="block w-full"
-              >
-                {content}
-              </button>
-            </li>
-          );
-        }
-
         return (
           <li key={run.id}>
-            <Link href={`/runs/${run.id}`} className="block">
+            <Link
+              href={href}
+              onClick={() => onSelect?.(run.id)}
+              className="block w-full"
+            >
               {content}
             </Link>
           </li>

@@ -56,7 +56,7 @@ export function ResourceTiles({ detail, className }: ResourceTilesProps) {
         value={artifactCount}
         tone="info"
         icon={<GitBranch className="h-4 w-4" />}
-        caption="across all sponsors"
+        caption="across all providers"
       />
     </div>
   );

@@ -28,6 +28,13 @@ export interface WunderGraphOperationResult {
   completedAt: string;
 }
 
+export interface WunderGraphConfig {
+  apiUrl?: string;
+  apiKey?: string;
+  mcpUrl?: string;
+  healthUrl?: string;
+}
+
 const DEFAULT_SAFELIST: readonly WunderGraphSafeOperation[] = [
   'recordBrowserObservation',
   'recordBugHypothesis',
@@ -49,6 +56,40 @@ export function getWunderGraphSafelist(): readonly WunderGraphSafeOperation[] {
     .filter((value): value is WunderGraphSafeOperation => (DEFAULT_SAFELIST as readonly string[]).includes(value));
 
   return allowed.length > 0 ? allowed : DEFAULT_SAFELIST;
+}
+
+function cleanEnvValue(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function controlPlaneHealthUrl(apiUrl: string): string {
+  try {
+    const url = new URL(apiUrl);
+
+    if (url.pathname === '' || url.pathname === '/') {
+      url.pathname = '/health';
+    }
+
+    return url.toString();
+  } catch {
+    return apiUrl;
+  }
+}
+
+export function getWunderGraphConfig(): WunderGraphConfig {
+  loadLocalEnv();
+
+  const apiUrl = cleanEnvValue(process.env.WUNDERGRAPH_API_URL) ?? cleanEnvValue(process.env.COSMO_API_URL);
+  const apiKey = cleanEnvValue(process.env.WUNDERGRAPH_API_KEY) ?? cleanEnvValue(process.env.COSMO_API_KEY);
+  const mcpUrl = cleanEnvValue(process.env.WUNDERGRAPH_MCP_URL);
+
+  return {
+    apiUrl,
+    apiKey,
+    mcpUrl,
+    healthUrl: apiUrl ? controlPlaneHealthUrl(apiUrl) : undefined,
+  };
 }
 
 function summarizeInput(input: Record<string, unknown>): Record<string, unknown> {
@@ -85,7 +126,8 @@ export async function executeWunderGraphOperation<T>(
   }
 
   const start = Date.now();
-  const endpoint = process.env.WUNDERGRAPH_MCP_URL ?? process.env.WUNDERGRAPH_API_URL;
+  const { apiKey, mcpUrl } = getWunderGraphConfig();
+  const endpoint = mcpUrl;
   const transport: WunderGraphOperationResult['transport'] = endpoint ? 'mcp-gateway' : 'local-safelist';
   const executionId = `wg_${request.operation}_${randomUUID().slice(0, 12)}`;
 
@@ -95,7 +137,7 @@ export async function executeWunderGraphOperation<T>(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(process.env.WUNDERGRAPH_API_KEY ? { Authorization: `Bearer ${process.env.WUNDERGRAPH_API_KEY}` } : {}),
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
         },
         body: JSON.stringify({
           operation: request.operation,

@@ -12,6 +12,7 @@ import {
 import { createSensoClient } from './senso';
 import { listTinyFishRuns } from './tinyfish';
 import { loadLocalEnv } from './env';
+import { getWunderGraphConfig } from './wundergraph';
 
 export type SponsorStatusState = 'live' | 'not_configured' | 'failed' | 'local_artifact';
 
@@ -151,20 +152,27 @@ export async function checkSponsorStatuses(): Promise<SponsorStatus[]> {
       };
     }),
     checkSponsor('wundergraph', async () => {
-      if (!process.env.WUNDERGRAPH_API_URL && !process.env.WUNDERGRAPH_MCP_URL) {
+      const { apiKey, apiUrl, healthUrl, mcpUrl } = getWunderGraphConfig();
+
+      if (!apiUrl && !mcpUrl) {
         return {
           state: 'not_configured',
-          summary: 'WUNDERGRAPH_API_URL or WUNDERGRAPH_MCP_URL is missing.',
+          summary: 'Add a WunderGraph control-plane or MCP endpoint to enable checks.',
         };
       }
 
-      const url = process.env.WUNDERGRAPH_API_URL ?? process.env.WUNDERGRAPH_MCP_URL;
-      const response = await fetch(url!, {
+      const endpoint = mcpUrl ?? healthUrl ?? apiUrl!;
+      let response = await fetch(endpoint, {
         method: 'HEAD',
-        headers: process.env.WUNDERGRAPH_API_KEY
-          ? { Authorization: `Bearer ${process.env.WUNDERGRAPH_API_KEY}` }
-          : undefined,
+        headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
       });
+
+      if (response.status === 405) {
+        response = await fetch(endpoint, {
+          method: 'GET',
+          headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
+        });
+      }
 
       if (!response.ok) {
         throw new Error(`WunderGraph endpoint returned ${response.status}`);
@@ -172,8 +180,12 @@ export async function checkSponsorStatuses(): Promise<SponsorStatus[]> {
 
       return {
         state: 'live',
-        summary: 'WunderGraph endpoint responded.',
+        summary: mcpUrl
+          ? 'WunderGraph MCP endpoint responded.'
+          : 'WunderGraph control-plane health endpoint responded.',
         metadata: {
+          endpointType: mcpUrl ? 'mcp-gateway' : 'control-plane',
+          authenticated: Boolean(apiKey),
           status: response.status,
         },
       };

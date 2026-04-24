@@ -35,10 +35,6 @@ import { DiagnosisCard } from '@/components/flowpr/diagnosis-card';
 import { PatchCard } from '@/components/flowpr/patch-card';
 import { PrCard } from '@/components/flowpr/pr-card';
 import { ReadinessMeter } from '@/components/flowpr/readiness-meter';
-import {
-  SponsorRail,
-  type SponsorStatus,
-} from '@/components/flowpr/sponsor-rail';
 import { StateBadge } from '@/components/flowpr/state-badge';
 import { DeadLetterStrip } from '@/components/flowpr/dead-letter-strip';
 import { WorkerStatusNotice } from '@/components/flowpr/worker-status-notice';
@@ -74,7 +70,6 @@ export default function DashboardPage() {
   const [selectedRunId, setSelectedRunId] = useState<string>();
   const [runDetail, setRunDetail] = useState<RunDetail | null>(null);
   const [readiness, setReadiness] = useState<ReadinessResponse | null>(null);
-  const [sponsorStatuses, setSponsorStatuses] = useState<SponsorStatus[]>([]);
   const [isStarting, setIsStarting] = useState(false);
   const [notice, setNotice] = useState<string>();
   const [error, setError] = useState<string>();
@@ -86,14 +81,6 @@ export default function DashboardPage() {
     if (!response.ok) throw new Error(body.error ?? 'Failed to load runs');
     setRuns(body.runs);
     setSelectedRunId((current) => current ?? body.runs[0]?.id);
-  }
-
-  async function loadSponsorStatuses() {
-    const response = await fetch('/api/sponsors/status', { cache: 'no-store' });
-    const body = await response.json();
-    if (!response.ok)
-      throw new Error(body.error ?? 'Failed to load sponsor status');
-    setSponsorStatuses(body.statuses);
   }
 
   async function loadRunDetail(runId: string) {
@@ -114,9 +101,6 @@ export default function DashboardPage() {
 
   useEffect(() => {
     loadRuns().catch((e: unknown) => {
-      setError(e instanceof Error ? e.message : String(e));
-    });
-    loadSponsorStatuses().catch((e: unknown) => {
       setError(e instanceof Error ? e.message : String(e));
     });
   }, []);
@@ -154,11 +138,6 @@ export default function DashboardPage() {
     }
     return map;
   }, [runStream.liveStreams]);
-
-  const liveSponsors = useMemo(
-    () => sponsorStatuses.filter((s) => s.state === 'live').length,
-    [sponsorStatuses],
-  );
 
   async function startRun(input: {
     repoUrl: string;
@@ -213,13 +192,15 @@ export default function DashboardPage() {
   }
 
   const run = runDetail?.run;
-  const tinyfishAgent = runDetail?.browserObservations.find(
-    (obs) => obs.provider === 'tinyfish' && !obs.providerRunId?.startsWith('remote-'),
-  );
-  const tinyfishRemote = runDetail?.browserObservations.find(
+  const tinyfishObservations = runDetail?.browserObservations.filter((obs) => obs.provider === 'tinyfish');
+  const tinyfishAgent = tinyfishObservations?.find(
     (obs) =>
-      obs.provider === 'tinyfish' && obs.providerRunId?.startsWith('remote-'),
-  );
+      String((obs.viewport as { source?: string } | undefined)?.source) === 'tinyfish_agent_goal',
+  ) ?? tinyfishObservations?.find((obs) => !obs.providerRunId?.startsWith('remote-'));
+  const tinyfishRemote = tinyfishObservations?.find(
+    (obs) =>
+      String((obs.viewport as { source?: string } | undefined)?.source) === 'tinyfish_browser_cdp',
+  ) ?? tinyfishObservations?.find((obs) => obs.providerRunId?.startsWith('remote-'));
   const playwrightLocal = runDetail?.browserObservations.find(
     (obs) => obs.provider === 'playwright',
   );
@@ -249,13 +230,9 @@ export default function DashboardPage() {
               <p className="mt-4 max-w-2xl text-base text-muted-foreground">
                 Describe the journey, point at a preview URL. FlowPR drives a real
                 browser, explains what broke, fixes the code, re-verifies, and
-                opens a pull request — with live sponsor evidence attached.
+                opens a pull request — with live evidence attached.
               </p>
               <div className="mt-6 flex flex-wrap items-center gap-3">
-                <div className="inline-flex items-center gap-1.5 rounded-full border border-success/40 bg-success/5 px-3 py-1 text-xs text-success">
-                  <CheckCircle2 className="h-3 w-3" /> {liveSponsors} sponsor
-                  provider{liveSponsors === 1 ? '' : 's'} live
-                </div>
                 <Link
                   href="/demo"
                   className="inline-flex items-center gap-1 text-xs text-muted-foreground transition hover:text-foreground"
@@ -264,11 +241,6 @@ export default function DashboardPage() {
                 </Link>
               </div>
             </div>
-            <SponsorRail
-              statuses={sponsorStatuses}
-              variant="compact"
-              className="max-w-sm"
-            />
           </section>
 
           <DeadLetterStrip className="mb-4" />

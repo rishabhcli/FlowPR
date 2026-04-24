@@ -34,10 +34,6 @@ import {
   ReadinessMeter,
   type ReadinessSummary,
 } from '@/components/flowpr/readiness-meter';
-import {
-  SponsorRail,
-  type SponsorStatus,
-} from '@/components/flowpr/sponsor-rail';
 import { StateBadge } from '@/components/flowpr/state-badge';
 import { cn } from '@/lib/utils';
 import { formatTime } from '@/lib/format';
@@ -54,7 +50,7 @@ const DEMO_SCRIPT: Array<{ step: string; phaseGate: RunStatus }> = [
   { step: 'Open the Guild.ai gate + patch + regression test.', phaseGate: 'patching_code' },
   { step: 'Confirm local verification and TinyFish after-fix.', phaseGate: 'running_live_verification' },
   { step: 'Open the GitHub PR body.', phaseGate: 'creating_pr' },
-  { step: 'Point to sponsor rail and session trace.', phaseGate: 'publishing_artifacts' },
+  { step: 'Point to the evidence packet and session trace.', phaseGate: 'publishing_artifacts' },
 ];
 
 const phaseOrder: RunStatus[] = [
@@ -79,7 +75,6 @@ export default function DemoPage() {
   const [runs, setRuns] = useState<FlowPrRun[]>([]);
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [readiness, setReadiness] = useState<ReadinessResponse | null>(null);
-  const [sponsorStatuses, setSponsorStatuses] = useState<SponsorStatus[]>([]);
   const [error, setError] = useState<string>();
 
   async function loadRunList() {
@@ -101,18 +96,11 @@ export default function DemoPage() {
     if (readinessResponse.ok) setReadiness(await readinessResponse.json());
   }
 
-  async function loadSponsorStatuses() {
-    const response = await fetch('/api/sponsors/status', { cache: 'no-store' });
-    const body = await response.json();
-    if (response.ok) setSponsorStatuses(body.statuses ?? []);
-  }
-
   useEffect(() => {
     async function tick() {
       try {
         const latestRunId = await loadRunList();
         if (latestRunId) await loadDetail(latestRunId);
-        await loadSponsorStatuses();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
@@ -159,7 +147,7 @@ export default function DemoPage() {
               </h1>
               <p className="mt-3 max-w-2xl text-muted-foreground">
                 Three-minute walkthrough. Every tile is driven by real run state —
-                sponsor rails, browser evidence, patch, PR, and verification.
+                browser evidence, patch, PR, and verification.
               </p>
             </div>
             {detail && (
@@ -346,18 +334,6 @@ export default function DemoPage() {
               </aside>
             </div>
           )}
-
-          <section className="mt-10">
-            <div className="mb-4 flex items-center justify-between gap-2">
-              <h2 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">
-                Sponsor rail
-              </h2>
-              <span className="text-[11px] text-muted-foreground">
-                {sponsorStatuses.filter((s) => s.state === 'live').length} live
-              </span>
-            </div>
-            <SponsorRail statuses={sponsorStatuses} variant="full" />
-          </section>
 
           {runs.length > 1 && (
             <p className="mt-8 text-xs text-muted-foreground">

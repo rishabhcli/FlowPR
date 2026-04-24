@@ -1,5 +1,11 @@
 import { NextResponse } from 'next/server';
-import { checkSponsorStatuses, flowPrStreams, hasGitHubCredentials, loadLocalEnv } from '@flowpr/tools';
+import {
+  checkSponsorStatuses,
+  flowPrStreams,
+  getWunderGraphConfig,
+  hasGitHubCredentials,
+  loadLocalEnv,
+} from '@flowpr/tools';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
@@ -42,6 +48,14 @@ function insforgeState(): 'configured' | 'missing' | 'partial' {
   return 'missing';
 }
 
+function wunderGraphState(): 'configured' | 'missing' | 'partial' {
+  const { apiKey, apiUrl, mcpUrl } = getWunderGraphConfig();
+
+  if ((apiUrl || mcpUrl) && apiKey) return 'configured';
+  if (apiUrl || mcpUrl || apiKey) return 'partial';
+  return 'missing';
+}
+
 export async function GET() {
   loadLocalEnv();
   const repoRoot = findRepoRoot();
@@ -52,7 +66,7 @@ export async function GET() {
     insforge: insforgeState(),
     github: hasGitHubCredentials() ? 'configured' : 'missing',
     senso: envFlag('SENSO_API_KEY'),
-    wundergraph: process.env.WUNDERGRAPH_API_URL || process.env.WUNDERGRAPH_MCP_URL ? 'configured' : 'missing',
+    wundergraph: wunderGraphState(),
     guildai:
       process.env.GUILD_AI_API_KEY
         ? 'configured'
