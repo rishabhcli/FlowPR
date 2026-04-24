@@ -16,6 +16,7 @@ const SUCCESS = new Set([
   'applied',
   'generated',
   'learned',
+  'ready',
 ]);
 
 const WARNING = new Set([
@@ -41,6 +42,7 @@ const WARNING = new Set([
   'running_live_verification',
   'creating_pr',
   'publishing_artifacts',
+  'setup_needed',
 ]);
 
 const DANGER = new Set([

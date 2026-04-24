@@ -9,9 +9,20 @@ interface StateBadgeProps {
   dot?: boolean;
 }
 
+const userFacingLabels: Record<string, string> = {
+  configured: 'Ready',
+  missing: 'Setup needed',
+  partial: 'Needs setup',
+  local_artifact: 'Local mode',
+  not_configured: 'Available after setup',
+  live: 'Connected',
+  ready: 'Ready',
+  setup_needed: 'Setup needed',
+};
+
 export function StateBadge({ state, label, className, dot = true }: StateBadgeProps) {
   const tone = statusToTone(state);
-  const text = (label ?? state ?? '—').replace(/_/g, ' ');
+  const text = label ?? (state ? userFacingLabels[state] : undefined) ?? state ?? '—';
 
   return (
     <Badge

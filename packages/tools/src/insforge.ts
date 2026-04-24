@@ -428,7 +428,7 @@ function readProjectConfig(): InsForgeProjectConfig {
   }
 }
 
-function getInsForgeConfig() {
+export function getInsForgeConfig() {
   loadLocalEnv();
   const project = readProjectConfig();
   const baseUrl =

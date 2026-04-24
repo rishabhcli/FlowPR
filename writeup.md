@@ -1,90 +1,81 @@
 ## Inspiration
 
-FlowPR was inspired by how much time developers spend managing pull requests instead of actually improving code. In most teams, opening a PR is only the beginning: someone has to summarize the change, label it, decide who should review it, check whether it touches risky parts of the codebase, and keep the review moving. Those steps are important, but they are also repetitive and easy to forget.
+A lot of frontend bugs are tedious to chase but easy to describe. "Pay button doesn't show up on mobile checkout." A person has to open the preview, reproduce it, poke at the DOM, find the CSS that broke, patch it, and screenshot the before/after for the PR. Most of that is mechanical.
 
-We wanted to build something that makes the pull request process feel smoother and more intelligent. FlowPR was inspired by the idea that code review should have better flow: less context switching, fewer manual steps, and clearer communication between contributors and reviewers.
+We built FlowPR because an agent can do the mechanical part. Drive the browser, take the screenshots, read the DOM, write a patch, re-run the flow, open the PR. The human still reviews — they just don't start from zero.
 
 ## What it does
 
-FlowPR is a smart pull request assistant that helps automate and streamline the PR review workflow.
+FlowPR takes a preview URL and a flow goal and returns a draft GitHub PR with evidence.
 
-When a pull request is created, FlowPR can analyze the PR, generate a useful summary, suggest labels, recommend reviewers, and surface important context about the change. Instead of forcing reviewers to manually inspect every detail before understanding the purpose of the PR, FlowPR gives them a clear starting point.
+Given something like "complete checkout on mobile", it reproduces the failure in a real browser, pulls visual and DOM evidence, forms a hypothesis about the broken code, writes a patch, runs the local tests, verifies the flow again against the preview, and opens a draft PR with before/after screenshots and a full timeline of what it did.
 
-At a high level, FlowPR helps answer questions like:
-
-- What changed?
-- Why does this PR matter?
-- Who should review it?
-- What areas of the codebase are affected?
-- Are there any obvious risks or follow-up tasks?
-
-We also thought about FlowPR as a way to reduce review friction. If a PR can be represented as a workflow with tasks, signals, and decisions, then FlowPR helps optimize that workflow. Conceptually, we can think of the review burden as:
-
-\[
-\text{Review Friction} = \text{Context Missing} + \text{Manual Triage} + \text{Unclear Ownership}
-\]
-
-FlowPR tries to reduce each part of that equation by giving developers better context, automating repetitive steps, and making ownership clearer.
+The demo ships a deterministic regression: `pnpm demo:break` rewrites a z-index in `apps/demo-target/app/styles.css` so the Pay button disappears on a 390×844 viewport. `pnpm demo:start-run` kicks off a run. The Playwright spec at `apps/demo-target/tests/checkout-mobile.spec.ts` is the same ground truth a human would write, which is what the agent verifies against.
 
 ## How we built it
 
-We built FlowPR around the GitHub pull request workflow. The backend connects to GitHub APIs to retrieve pull request metadata, changed files, commit information, comments, and other useful signals. From there, FlowPR analyzes the PR and generates structured insights such as summaries, labels, and reviewer recommendations.
+pnpm workspaces + Turbo. Three pieces: a Next.js dashboard for intake and observability, a Redis-driven worker that runs the agent loop, and InsForge as the durable store for everything the agent produces.
 
-The frontend provides a clean interface where developers can view the PR analysis, understand the reasoning behind suggestions, and quickly act on FlowPR’s recommendations. We focused on making the experience simple and useful rather than overwhelming developers with too much information.
+The loop is a fixed-order state machine:
 
-Our build process included:
+```
+queued → loading_repo → discovering_flows → running_browser_qa →
+collecting_visual_evidence → triaging_failure → retrieving_policy →
+searching_memory → patching_code → running_local_tests →
+running_live_verification → creating_pr → publishing_artifacts →
+learned → done
+```
 
-- Designing the core PR workflow we wanted to improve.
-- Connecting to GitHub’s API to fetch pull request data.
-- Creating backend logic to analyze PRs and generate recommendations.
-- Building a React interface to display summaries, labels, reviewers, and insights.
-- Testing FlowPR on sample pull requests to refine the quality of its suggestions.
+Each handler finishes, XADDs the next `agent.step` onto `flowpr:agent_steps`, and the worker picks it up. If a worker dies mid-run, the next one resumes off the stream. Handlers are wrapped in `startIdempotentOperation` keyed by `dedupeKey`, so retries don't double-apply. Failed events retry up to 3 times; the third failure goes to `flowpr:dead_letter` with both a timeline event and a provider artifact, so the dashboard can show the failure with the same fidelity as a success.
 
-The goal was to make FlowPR feel like a practical assistant that fits naturally into how developers already work.
+For browser evidence we run three paths against the same preview URL:
+
+1. TinyFish Agent API with a stealth profile and US proxy, via `client.agent.stream`.
+2. TinyFish Browser API connected to Playwright over CDP, for direct remote screenshots.
+3. Local Playwright at 390×844 with trace capture, uploaded to InsForge storage.
+
+Each one records a separate observation. If they disagree, that disagreement is visible in the run detail — we didn't want a single screenshot to be the whole story.
+
+InsForge is the system of record. Every side effect — timeline event, browser observation, bug hypothesis, verification result, action gate, provider artifact — goes through helpers in `packages/tools/src/insforge.ts`. Screenshots and traces upload to the `flowpr-artifacts` bucket. The schema lives in `infra/insforge/schema.sql` and the row types live alongside the helpers.
+
+Guild.ai handles governance. `guild-agent.json` pins the permission profile to `draft-pr-only`, declares required capabilities, and lists `approvalRequiredFor` gates (protected branches, auth/payment files, more than 3 files changed). `pnpm guild:evaluate` fails the build if any of that drifts. `recordActionGate` calls in the state machine — `tinyfish_live_browser_run`, `redis_patch_lock`, `redis_pr_lock` — are the runtime enforcement.
+
+There's a house rule we enforce in the skill definition: don't claim a sponsor was used unless there's a provider artifact for it in InsForge. The dashboard reads the artifact rows directly, so the sponsor list on a run is never aspirational.
 
 ## Challenges we ran into
 
-One challenge was deciding what information is actually useful during code review. Pull requests can contain a lot of data, but not all of it helps reviewers make decisions. We had to think carefully about what FlowPR should surface and what it should leave out.
+**Agent evidence has to be worth trusting.** One screenshot is trivial to misread. Running three browser paths per run and attributing each artifact to the provider that produced it made the evidence something a reviewer can actually weigh.
 
-Another challenge was making the recommendations feel trustworthy. Automatically suggesting reviewers or labels is only helpful if the suggestions make sense. We had to balance automation with transparency so that developers could understand why FlowPR made a recommendation.
+**Ordering vs. parallelism.** The state machine has to be strictly ordered so the timeline is auditable, but the three browser paths want to run in parallel. We kept the ordering in one place (`stateOrder` in `state-machine.ts`) and let handlers fan out internally. `emitNextStep` is the only way a phase advances, which keeps the timeline linear even when the work isn't.
 
-We also ran into the challenge of summarizing technical changes clearly. A good PR summary should be concise, but it also needs to capture the important details. We had to think about how to turn raw PR data into something that would actually help a reviewer.
+**The demo bug had to be real.** A contrived "flip a boolean and the agent finds it" demo wouldn't have told us anything. A z-index regression that only reproduces at a specific mobile viewport, verified by an actual Playwright spec, is a real thing to repro and a real thing to fix.
 
-Finally, integrating with GitHub meant handling API responses, repository metadata, and different PR structures. Every PR is different, so FlowPR needed to be flexible enough to work across a variety of changes.
+**Dead letters, not silent failures.** The first version dropped retry-exhausted events. The current version writes a dead-letter timeline entry and a provider artifact, which made the agent itself debuggable.
+
+**Governance shaped the product.** `draft-pr-only` plus the approval gates meant we had to assume from day one that the agent cannot merge, cannot push to protected branches, and cannot touch auth or payment files without a human gate. That constraint made everything downstream simpler.
 
 ## Accomplishments that we're proud of
 
-We are proud that FlowPR turns a messy, manual workflow into something more structured and approachable. Instead of asking developers to start every review from scratch, FlowPR gives them a useful first layer of context.
+The loop works end to end on the demo. Preview URL in, draft PR out, with screenshots and traces attached and a timeline in InsForge that a reviewer can scroll through.
 
-We are also proud of building a project that solves a real developer pain point. Pull requests are central to modern software development, and even small improvements to the review process can save teams a lot of time.
+`pnpm guild:evaluate` runs in CI. Governance is executable config, not a policy doc.
 
-Another accomplishment was combining automation with collaboration. FlowPR is not meant to replace human reviewers. It is meant to help them move faster, understand changes better, and focus their attention where it matters most.
-
-Most importantly, we are proud that FlowPR creates a smoother developer experience. It helps teams spend less time managing the process around code review and more time improving the code itself.
+Dead-lettered runs render in the dashboard the same way successful ones do, which turned out to matter more than we expected while we were building the agent itself.
 
 ## What we learned
 
-We learned that building developer tools requires more than just automation. The tool has to fit into existing workflows, respect how developers already collaborate, and provide value without adding extra complexity.
+Most of the work wasn't the agent. It was the surface around it — the state machine, the streams, the locks, the idempotency keys, the artifact schema, the governance config. Skip any of those and you have a demo, not something you'd trust with a PR.
 
-We also learned a lot about pull request metadata and how much information is hidden inside a PR. Changed files, commit messages, authorship, labels, comments, and review history can all provide useful signals when interpreted correctly.
+Durability is the thing that earns trust. Redis streams plus InsForge rows plus a strictly ordered state machine means any run can be replayed, re-driven, and audited. It's boring, and that's why it works.
 
-Another major lesson was the importance of clarity. A long or overly technical summary is not always helpful. The best output is short, accurate, and actionable. FlowPR taught us that good developer tooling should reduce cognitive load, not add to it.
+The right shape for this kind of agent is a draft PR with proof, not a merge. The agent compresses the grunt work before review. It doesn't replace the reviewer.
 
-We also learned how important trust is in AI-assisted or automation-heavy workflows. Developers need to understand why a tool is making a suggestion before they rely on it. That shaped how we thought about FlowPR’s summaries, labels, and reviewer recommendations.
+## What's next
 
-## What's next for FlowPR
+- Flow discovery. `exerciseFlow` currently pattern-matches on pricing / signup / checkout. Next step is letting the agent discover flows from a sitemap plus a goal description.
+- Using the memory we already store. `flowpr:memory:bug-signatures:*` and `flowpr:memory:successful-patches:*` exist; we want them retrieved during `patching_code` so similar past fixes actually influence the patch.
+- More approval gates — schema migrations, infra files, dependency bumps — and per-repo permission profiles.
+- Multi-repo runs that coordinate evidence across services and open linked PRs.
+- Continuous benchmarking. `recordBenchmarkEvaluation` is in the schema but not yet on a loop. Running it against a held-out set of seeded bugs would score every state-machine change against the same ground truth.
 
-Next, we want to make FlowPR more deeply integrated into the pull request lifecycle. That could include automatically posting PR summaries as GitHub comments, adding smarter reviewer assignment, detecting risky changes, and tracking whether PRs are blocked.
-
-We also want to improve FlowPR’s understanding of repositories over time. For example, it could learn which reviewers are most familiar with certain files, which labels are commonly used for different types of changes, and which parts of the codebase are most sensitive.
-
-Future versions of FlowPR could include:
-
-- Deeper GitHub integration.
-- Better reviewer recommendation logic.
-- Risk scoring for pull requests.
-- Team-level analytics for review bottlenecks.
-- Support for larger repositories and multi-repo projects.
-- More customizable rules for different engineering teams.
-
-Ultimately, we want FlowPR to become a reliable assistant for pull request collaboration, helping teams move from code changes to approved, well-reviewed code with less friction.
+The goal is for FlowPR to be the first responder on a frontend regression — it does the boring part, and hands the human a PR they can decide on in a minute.

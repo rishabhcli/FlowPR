@@ -25,6 +25,23 @@ function envFlag(name: string): 'configured' | 'missing' {
   return process.env[name] ? 'configured' : 'missing';
 }
 
+function insforgeState(): 'configured' | 'missing' | 'partial' {
+  const hasUrl = Boolean(
+    process.env.INSFORGE_API_URL ||
+      process.env.INSFORGE_URL ||
+      process.env.NEXT_PUBLIC_INSFORGE_URL,
+  );
+  const hasKey = Boolean(
+    process.env.INSFORGE_ANON_KEY ||
+      process.env.INSFORGE_API_KEY ||
+      process.env.NEXT_PUBLIC_INSFORGE_ANON_KEY,
+  );
+
+  if (hasUrl && hasKey) return 'configured';
+  if (hasUrl || hasKey) return 'partial';
+  return 'missing';
+}
+
 export async function GET() {
   loadLocalEnv();
   const repoRoot = findRepoRoot();
@@ -32,12 +49,7 @@ export async function GET() {
   const envReadiness = {
     redis: envFlag('REDIS_URL'),
     tinyfish: envFlag('TINYFISH_API_KEY'),
-    insforge:
-      (process.env.INSFORGE_API_URL ? 'configured' : 'missing') === 'configured' && process.env.INSFORGE_ANON_KEY
-        ? 'configured'
-        : process.env.INSFORGE_API_URL || process.env.INSFORGE_API_KEY
-          ? 'partial'
-          : 'missing',
+    insforge: insforgeState(),
     github: hasGitHubCredentials() ? 'configured' : 'missing',
     senso: envFlag('SENSO_API_KEY'),
     wundergraph: process.env.WUNDERGRAPH_API_URL || process.env.WUNDERGRAPH_MCP_URL ? 'configured' : 'missing',

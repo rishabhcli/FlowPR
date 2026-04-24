@@ -48,6 +48,13 @@ function sponsorName(sponsor: string) {
   return sponsor.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+function sponsorStateLabel(state: SponsorStatus['state']) {
+  if (state === 'live') return 'Connected';
+  if (state === 'local_artifact') return 'Local mode';
+  if (state === 'not_configured') return 'Available after setup';
+  return 'Needs attention';
+}
+
 export function SponsorRail({ statuses, variant = 'full', className }: SponsorRailProps) {
   const sorted = [...statuses].sort(order);
 
@@ -59,7 +66,7 @@ export function SponsorRail({ statuses, variant = 'full', className }: SponsorRa
           return (
             <span
               key={status.sponsor}
-              title={`${sponsorName(status.sponsor)} · ${status.state.replace('_', ' ')}\n${status.summary}`}
+              title={`${sponsorName(status.sponsor)} · ${sponsorStateLabel(status.state)}\n${status.summary}`}
               className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card/60 px-2.5 py-1 text-[11px] font-medium text-muted-foreground"
             >
               <span className={cn('h-1.5 w-1.5 rounded-full', toneDotClass(tone))} />
@@ -82,7 +89,7 @@ export function SponsorRail({ statuses, variant = 'full', className }: SponsorRa
             <p className="truncate text-sm font-medium text-foreground">
               {sponsorName(status.sponsor)}
             </p>
-            <StateBadge state={status.state} />
+            <StateBadge state={status.state} label={sponsorStateLabel(status.state)} />
           </div>
           <p
             className="line-clamp-2 text-xs text-muted-foreground"

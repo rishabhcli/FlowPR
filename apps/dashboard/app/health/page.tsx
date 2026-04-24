@@ -6,14 +6,19 @@ import {
   Activity,
   AlertTriangle,
   Box,
-  CheckCircle2,
+  Cloud,
   Clock,
   Cpu,
-  Key,
+  Database,
+  Github,
   Loader2,
+  Network,
+  PackageCheck,
   Radio,
+  Rocket,
+  ShieldCheck,
   Siren,
-  XCircle,
+  Workflow,
 } from 'lucide-react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -23,8 +28,9 @@ import { SiteHeader } from '@/components/flowpr/site-header';
 import { MetricTile } from '@/components/flowpr/metric-tile';
 import { StateBadge } from '@/components/flowpr/state-badge';
 import { SponsorRail, type SponsorStatus } from '@/components/flowpr/sponsor-rail';
+import { GitHubConnectionPanel } from '@/components/flowpr/github-connection-panel';
 import { cn } from '@/lib/utils';
-import { formatRelativeTime, prettifyKey } from '@/lib/format';
+import { formatRelativeTime } from '@/lib/format';
 
 type EnvState = 'configured' | 'missing' | 'partial' | 'local_artifact';
 
@@ -72,6 +78,81 @@ interface DeadLetterResponse {
   error?: string;
 }
 
+const integrationOrder = [
+  'github',
+  'insforge',
+  'redis',
+  'tinyfish',
+  'senso',
+  'guildai',
+  'shipables',
+  'wundergraph',
+  'akash',
+  'chainguard',
+];
+
+const optionalIntegrations = new Set(['wundergraph', 'akash', 'chainguard']);
+
+const integrationCopy: Record<
+  string,
+  {
+    label: string;
+    description: string;
+    capability: string;
+  }
+> = {
+  github: {
+    label: 'GitHub',
+    description: 'Connects customer repositories, branches, and pull requests.',
+    capability: 'Repository access',
+  },
+  insforge: {
+    label: 'InsForge',
+    description: 'Stores runs, evidence, auth sessions, and connection records.',
+    capability: 'System of record',
+  },
+  redis: {
+    label: 'Redis',
+    description: 'Keeps run queues, worker locks, progress, and short-term memory moving.',
+    capability: 'Run queue',
+  },
+  tinyfish: {
+    label: 'TinyFish',
+    description: 'Runs live browser sessions against the customer preview.',
+    capability: 'Browser QA',
+  },
+  senso: {
+    label: 'Senso',
+    description: 'Adds policy and acceptance context before diagnosis and PR writing.',
+    capability: 'Policy context',
+  },
+  guildai: {
+    label: 'Guild.ai',
+    description: 'Gates high-impact actions before patching and PR creation.',
+    capability: 'Action gates',
+  },
+  shipables: {
+    label: 'Shipables',
+    description: 'Packages the FlowPR skill and proof bundle for delivery.',
+    capability: 'Skill package',
+  },
+  wundergraph: {
+    label: 'WunderGraph',
+    description: 'Routes controlled backend operations when a safe operation is available.',
+    capability: 'Safe operations',
+  },
+  akash: {
+    label: 'Akash',
+    description: 'Supports hosted runtime deployment when enabled for this workspace.',
+    capability: 'Deployment',
+  },
+  chainguard: {
+    label: 'Chainguard',
+    description: 'Supports container hardening and runtime packaging checks.',
+    capability: 'Container path',
+  },
+};
+
 export default function HealthPage() {
   const [data, setData] = useState<HealthResponse | null>(null);
   const [workers, setWorkers] = useState<WorkerStatusResponse | null>(null);
@@ -110,15 +191,41 @@ export default function HealthPage() {
   }, []);
 
   const counts = useMemo(() => {
-    if (!data) return { configured: 0, partial: 0, missing: 0, envTotal: 0, sponsorsLive: 0 };
-    const envEntries = Object.values(data.envReadiness);
+    if (!data) {
+      return {
+        ready: 0,
+        coreTotal: 0,
+        needsSetup: 0,
+        optionalAvailable: 0,
+        sponsorsLive: 0,
+      };
+    }
+    const coreEntries = Object.entries(data.envReadiness).filter(
+      ([key]) => !optionalIntegrations.has(key),
+    );
+    const optionalEntries = Object.entries(data.envReadiness).filter(([key]) =>
+      optionalIntegrations.has(key),
+    );
     return {
-      envTotal: envEntries.length,
-      configured: envEntries.filter((s) => s === 'configured').length,
-      partial: envEntries.filter((s) => s === 'partial' || s === 'local_artifact').length,
-      missing: envEntries.filter((s) => s === 'missing').length,
+      coreTotal: coreEntries.length,
+      ready: coreEntries.filter(([, state]) =>
+        state === 'configured' || state === 'local_artifact',
+      ).length,
+      needsSetup: coreEntries.filter(([, state]) =>
+        state === 'missing' || state === 'partial',
+      ).length,
+      optionalAvailable: optionalEntries.filter(([, state]) => state !== 'missing').length,
       sponsorsLive: data.sponsorStatuses.filter((s) => s.state === 'live').length,
     };
+  }, [data]);
+
+  const integrationRows = useMemo(() => {
+    if (!data) return [];
+    return Object.entries(data.envReadiness).sort(([a], [b]) => {
+      const ai = integrationOrder.indexOf(a);
+      const bi = integrationOrder.indexOf(b);
+      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    });
   }, [data]);
 
   return (
@@ -134,11 +241,11 @@ export default function HealthPage() {
                 <Activity className="h-3 w-3 text-primary" /> System health
               </p>
               <h1 className="font-display text-balance text-3xl font-semibold leading-tight tracking-tight sm:text-4xl">
-                Provider readiness
+                Workspace connections
               </h1>
               {data && (
                 <p className="mt-2 text-sm text-muted-foreground">
-                  Generated {formatRelativeTime(data.generatedAt)} ·{' '}
+                  Refreshed {formatRelativeTime(data.generatedAt)} ·{' '}
                   <span className="font-mono">{new Date(data.generatedAt).toLocaleTimeString()}</span>
                 </p>
               )}
@@ -155,7 +262,7 @@ export default function HealthPage() {
 
           {!data && !error && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" /> Pinging providers…
+              <Loader2 className="h-4 w-4 animate-spin" /> Loading workspace connections…
             </div>
           )}
 
@@ -163,28 +270,32 @@ export default function HealthPage() {
             <>
               <section className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
                 <MetricTile
-                  label="Env configured"
-                  value={`${counts.configured}/${counts.envTotal}`}
-                  tone={counts.missing === 0 ? 'success' : 'warning'}
-                  icon={<Key className="h-5 w-5" />}
-                  caption={counts.missing > 0 ? `${counts.missing} missing` : 'All required keys present'}
+                  label="Core ready"
+                  value={`${counts.ready}/${counts.coreTotal}`}
+                  tone={counts.needsSetup === 0 ? 'success' : 'warning'}
+                  icon={<ShieldCheck className="h-5 w-5" />}
+                  caption={
+                    counts.needsSetup > 0
+                      ? `${counts.needsSetup} connection${counts.needsSetup === 1 ? '' : 's'} need setup`
+                      : 'Ready for autonomous runs'
+                  }
                 />
                 <MetricTile
-                  label="Sponsors live"
+                  label="Live checks"
                   value={counts.sponsorsLive}
                   tone={counts.sponsorsLive > 0 ? 'success' : 'muted'}
                   icon={<Radio className="h-5 w-5" />}
-                  caption={`${data.sponsorStatuses.length} checked`}
+                  caption={`${data.sponsorStatuses.length} integrations checked`}
                 />
                 <MetricTile
-                  label="Redis streams"
+                  label="State streams"
                   value={data.streams.length}
                   tone={data.streams.length > 0 ? 'success' : 'danger'}
                   icon={<Box className="h-5 w-5" />}
-                  caption={data.streams.length > 0 ? 'Consumer groups OK' : 'No streams detected'}
+                  caption={data.streams.length > 0 ? 'Events are flowing' : 'No streams detected'}
                 />
                 <MetricTile
-                  label="Workers alive"
+                  label="Workers"
                   value={workers?.aliveCount ?? 0}
                   tone={
                     workers === null ? 'muted' : workers.aliveCount > 0 ? 'success' : 'danger'
@@ -193,7 +304,7 @@ export default function HealthPage() {
                   caption={
                     workers && workers.workers.length > 0
                       ? `${workers.workers.length} tracked`
-                      : 'No heartbeats seen'
+                      : 'Start a worker to process queued runs'
                   }
                 />
                 <MetricTile
@@ -205,19 +316,23 @@ export default function HealthPage() {
                 />
               </section>
 
+              <section className="mb-6">
+                <GitHubConnectionPanel />
+              </section>
+
               {deadLetter && deadLetter.entries.length > 0 && (
                 <Card className="mb-6 border-destructive/40 bg-destructive/5">
                   <CardHeader className="pb-3">
                     <div className="flex items-center justify-between gap-2">
                       <CardTitle className="flex items-center gap-2 text-sm uppercase tracking-wide text-destructive">
-                        <Siren className="h-4 w-4" /> Dead letter
+                        <Siren className="h-4 w-4" /> Attention queue
                       </CardTitle>
                       <span className="text-[11px] text-muted-foreground">
                         {deadLetter.count} entries
                       </span>
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      Events the worker couldn&apos;t process after 3 attempts. These runs are stuck.
+                      Events that need an operator look before the run can continue cleanly.
                     </p>
                   </CardHeader>
                   <CardContent>
@@ -312,16 +427,16 @@ export default function HealthPage() {
                 <Card>
                   <CardHeader className="pb-3">
                     <CardTitle className="text-sm uppercase tracking-wide text-muted-foreground">
-                      Environment
+                      Platform connections
                     </CardTitle>
                     <p className="text-xs text-muted-foreground">
-                      Required credentials for the run loop.
+                      What FlowPR can use for customer-facing runs.
                     </p>
                   </CardHeader>
                   <CardContent>
-                    <ul className="space-y-1.5">
-                      {Object.entries(data.envReadiness).map(([key, state]) => (
-                        <EnvRow key={key} name={key} state={state} />
+                    <ul className="space-y-2">
+                      {integrationRows.map(([key, state]) => (
+                        <IntegrationRow key={key} name={key} state={state} />
                       ))}
                     </ul>
                   </CardContent>
@@ -330,10 +445,10 @@ export default function HealthPage() {
                 <Card>
                   <CardHeader className="pb-3">
                     <CardTitle className="text-sm uppercase tracking-wide text-muted-foreground">
-                      Sponsor checks
+                      Integration checks
                     </CardTitle>
                     <p className="text-xs text-muted-foreground">
-                      Live pings against each sponsor provider.
+                      Recent live checks against the services FlowPR can use.
                     </p>
                   </CardHeader>
                   <CardContent>
@@ -353,7 +468,7 @@ export default function HealthPage() {
                       Redis streams
                     </CardTitle>
                     <p className="text-xs text-muted-foreground">
-                      Event backbone for the state machine.
+                      Event backbone for runs, workers, evidence, and verification.
                     </p>
                   </CardHeader>
                   <CardContent>
@@ -387,23 +502,75 @@ export default function HealthPage() {
   );
 }
 
-function EnvRow({ name, state }: { name: string; state: EnvState }) {
-  const Icon =
-    state === 'configured' ? CheckCircle2 : state === 'missing' ? XCircle : AlertTriangle;
+function integrationIcon(name: string) {
+  if (name === 'github') return Github;
+  if (name === 'insforge') return Database;
+  if (name === 'redis') return Box;
+  if (name === 'tinyfish') return Radio;
+  if (name === 'senso') return ShieldCheck;
+  if (name === 'guildai') return Workflow;
+  if (name === 'shipables') return PackageCheck;
+  if (name === 'wundergraph') return Network;
+  if (name === 'akash') return Cloud;
+  if (name === 'chainguard') return Rocket;
+  return Activity;
+}
+
+function integrationStateLabel(name: string, state: EnvState) {
+  if (state === 'configured') return 'Ready';
+  if (state === 'local_artifact') return 'Local mode';
+  if (optionalIntegrations.has(name) && state === 'missing') {
+    return 'Available after setup';
+  }
+  if (state === 'partial') return 'Needs setup';
+  return 'Setup needed';
+}
+
+function integrationToneState(name: string, state: EnvState) {
+  if (state === 'configured') return 'configured';
+  if (state === 'local_artifact') return 'local_artifact';
+  if (optionalIntegrations.has(name) && state === 'missing') return 'not_configured';
+  return state;
+}
+
+function IntegrationRow({ name, state }: { name: string; state: EnvState }) {
+  const Icon = integrationIcon(name);
+  const copy = integrationCopy[name] ?? {
+    label: name.replace(/[_-]+/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase()),
+    description: 'Workspace integration.',
+    capability: 'Integration',
+  };
+
   return (
-    <li className="flex items-center justify-between gap-2 rounded-md border border-border bg-card/40 px-3 py-2">
-      <div className="flex items-center gap-2 min-w-0">
+    <li className="rounded-md border border-border bg-card/40 px-3 py-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 gap-3">
         <Icon
           className={cn(
-            'h-3.5 w-3.5 shrink-0',
+              'mt-0.5 h-4 w-4 shrink-0',
             state === 'configured' && 'text-success',
-            state === 'missing' && 'text-destructive',
+              state === 'missing' && !optionalIntegrations.has(name) && 'text-warning',
             (state === 'partial' || state === 'local_artifact') && 'text-warning',
+              optionalIntegrations.has(name) && state === 'missing' && 'text-muted-foreground',
           )}
         />
-        <span className="truncate font-mono text-xs text-foreground">{prettifyKey(name)}</span>
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-foreground">{copy.label}</p>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              {copy.description}
+            </p>
+            <p className="mt-1 text-[10px] uppercase tracking-wide text-muted-foreground/70">
+              {copy.capability}
+            </p>
+          </div>
       </div>
-      <StateBadge state={state} dot={false} />
+        <StateBadge
+          state={integrationToneState(name, state)}
+          label={integrationStateLabel(name, state)}
+          dot={false}
+          className="shrink-0"
+        />
+      </div>
     </li>
   );
 }
