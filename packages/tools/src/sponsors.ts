@@ -2,7 +2,13 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { getGitHubRepository } from './github';
 import { getInsForgeClient, listRecentRuns } from './insforge';
-import { connectFlowPrRedisClient, createFlowPrRedisClient, flowPrStreams } from './redis';
+import {
+  connectFlowPrRedisClient,
+  createFlowPrRedisClient,
+  ensureFlowPrConsumerGroups,
+  flowPrStreams,
+  getRedisStreamStats,
+} from './redis';
 import { createSensoClient } from './senso';
 import { listTinyFishRuns } from './tinyfish';
 import { loadLocalEnv } from './env';
@@ -82,14 +88,20 @@ export async function checkSponsorStatuses(): Promise<SponsorStatus[]> {
 
       try {
         await connectFlowPrRedisClient(redis);
+        await ensureFlowPrConsumerGroups(redis);
         const pong = await redis.ping();
+        const stats = await getRedisStreamStats(redis);
+        const memoryKeyCount = await redis.keys('flowpr:memory:*').then((keys) => keys.length);
 
         return {
           state: 'live',
-          summary: 'Redis responded to PING.',
+          summary: 'Redis Streams, consumer groups, locks, and memory namespace are reachable.',
           metadata: {
             response: pong,
             streams: Object.values(flowPrStreams),
+            streamLengths: Object.fromEntries(stats.map((stat) => [stat.stream, stat.length])),
+            consumerGroups: Object.fromEntries(stats.map((stat) => [stat.stream, stat.groups.length])),
+            memoryKeyCount,
           },
         };
       } finally {

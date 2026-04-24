@@ -113,6 +113,10 @@ export default function DashboardPage() {
     () => sponsorStatuses.filter((status) => status.state === 'live').length,
     [sponsorStatuses],
   );
+  const redisArtifacts = useMemo(
+    () => runDetail?.providerArtifacts.filter((artifact) => artifact.sponsor === 'redis') ?? [],
+    [runDetail],
+  );
 
   async function startRun(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -257,6 +261,27 @@ export default function DashboardPage() {
                         <code>{artifact.providerId ?? 'recorded'}</code>
                       </li>
                     ))}
+                  </ul>
+                </section>
+                <section>
+                  <h3>Redis Runtime</h3>
+                  <ul>
+                    {redisArtifacts.map((artifact) => (
+                      <li key={artifact.id}>
+                        <strong>{artifact.artifactType}</strong>
+                        <span>
+                          {String(artifact.requestSummary.stream ?? artifact.requestSummary.lockKey ?? 'redis')}
+                        </span>
+                        <code>{artifact.providerId ?? 'recorded'}</code>
+                      </li>
+                    ))}
+                    {redisArtifacts.length === 0 && (
+                      <li>
+                        <strong>Waiting</strong>
+                        <span>No Redis runtime artifacts yet.</span>
+                        <code>queued</code>
+                      </li>
+                    )}
                   </ul>
                 </section>
                 <section>

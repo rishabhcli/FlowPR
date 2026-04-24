@@ -15,6 +15,7 @@
     "demo:reset": "tsx scripts/demo-reset.ts",
     "demo:break": "tsx scripts/demo-break.ts",
     "demo:start-run": "tsx scripts/demo-start-run.ts",
+    "redis:smoke": "tsx scripts/redis-phase3-smoke.ts",
     "guild:evaluate": "tsx scripts/guild-evaluate.ts",
     "skill:dry-run": "pnpm --dir skills/flowpr-autonomous-frontend-qa skill:dry-run",
     "mcp:list": "codex mcp list"
@@ -25,4 +26,3 @@
     "typescript": "^5.7.0"
   }
 }
-

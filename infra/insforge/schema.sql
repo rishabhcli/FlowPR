@@ -101,13 +101,18 @@ create table if not exists qa_runs (
     status in (
       'queued',
       'loading_repo',
+      'discovering_flows',
       'running_browser_qa',
+      'collecting_visual_evidence',
       'triaging_failure',
       'retrieving_policy',
+      'searching_memory',
       'patching_code',
       'running_local_tests',
       'running_live_verification',
       'creating_pr',
+      'publishing_artifacts',
+      'learned',
       'done',
       'failed'
     )

@@ -6,8 +6,7 @@ import {
   createFlowPrRedisClient,
   createRun,
   emitRunStarted,
-  ensureFlowPrConsumerGroup,
-  getGitHubRepository,
+  ensureFlowPrConsumerGroups,
   recordProviderArtifact,
 } from '@flowpr/tools';
 
@@ -68,57 +67,18 @@ export async function POST(request: Request) {
     });
 
     const warnings: string[] = [];
-
-    try {
-      const repository = await getGitHubRepository(run.owner, run.repo);
-
-      await appendTimelineEvent({
-        runId: run.id,
-        actor: 'github',
-        phase: 'loading_repo',
-        status: 'completed',
-        title: 'GitHub repository metadata loaded.',
-        data: repository as unknown as Record<string, unknown>,
-      });
-
-      await recordProviderArtifact({
-        runId: run.id,
-        sponsor: 'github',
-        artifactType: 'repository_lookup',
-        providerId: String(repository.id),
-        artifactUrl: repository.htmlUrl,
-        requestSummary: {
-          owner: run.owner,
-          repo: run.repo,
-        },
-        responseSummary: {
-          fullName: repository.fullName,
-          defaultBranch: repository.defaultBranch,
-          private: repository.private,
-        },
-        raw: repository as unknown as Record<string, unknown>,
-      });
-    } catch (error) {
-      warnings.push(`GitHub repository lookup failed: ${getErrorMessage(error)}`);
-      await appendTimelineEvent({
-        runId: run.id,
-        actor: 'github',
-        phase: 'loading_repo',
-        status: 'failed',
-        title: 'GitHub repository lookup failed.',
-        data: {
-          error: getErrorMessage(error),
-        },
-      });
-    }
-
     let streamId: string | undefined;
     const redis = createFlowPrRedisClient();
 
     try {
       await connectFlowPrRedisClient(redis);
-      await ensureFlowPrConsumerGroup(redis);
-      streamId = await emitRunStarted(redis, run.id);
+      await ensureFlowPrConsumerGroups(redis);
+      streamId = await emitRunStarted(redis, {
+        runId: run.id,
+        repoUrl: run.repoUrl,
+        previewUrl: run.previewUrl,
+        flowGoal: run.flowGoal,
+      });
 
       await appendTimelineEvent({
         runId: run.id,
@@ -143,10 +103,14 @@ export async function POST(request: Request) {
         },
         responseSummary: {
           streamId,
+          consumerGroup: 'flowpr-workers',
         },
         raw: {
           runId: run.id,
           eventType: 'run.started',
+          repoUrl: run.repoUrl,
+          previewUrl: run.previewUrl,
+          flowGoal: run.flowGoal,
         },
       });
     } catch (error) {
