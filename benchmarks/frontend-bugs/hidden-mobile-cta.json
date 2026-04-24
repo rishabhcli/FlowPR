@@ -1,0 +1,15 @@
+{
+  "name": "hidden-mobile-cta",
+  "flowGoal": "On mobile, choose Pro on pricing, complete checkout, and reach the success page.",
+  "expectedBugType": "blocked_cta",
+  "successCondition": "Checkout reaches /success after patch.",
+  "riskLevel": "critical",
+  "viewport": { "width": 390, "height": 844 },
+  "fixtures": {
+    "previewUrl": "http://localhost:3100",
+    "expectedFilesChanged": [
+      "apps/demo-target/app/styles.css",
+      "apps/demo-target/tests/checkout-mobile-regression.spec.ts"
+    ]
+  }
+}

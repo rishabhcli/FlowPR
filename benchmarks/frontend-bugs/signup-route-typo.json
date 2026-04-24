@@ -1,0 +1,12 @@
+{
+  "name": "signup-route-typo",
+  "flowGoal": "Sign up as a new user and land on the success page.",
+  "expectedBugType": "client_navigation_failure",
+  "successCondition": "Signup form submission reaches /success.",
+  "riskLevel": "high",
+  "viewport": { "width": 390, "height": 844 },
+  "fixtures": {
+    "previewUrl": "http://localhost:3100/signup",
+    "expectedFilesChanged": ["apps/demo-target/app/signup/page.tsx"]
+  }
+}

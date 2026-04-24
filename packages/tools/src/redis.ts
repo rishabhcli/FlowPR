@@ -76,6 +76,8 @@ interface EmitAgentStepInput {
   reason?: string;
   previousStreamId?: string;
   dedupeKey?: string;
+  mode?: string;
+  extra?: Record<string, string | number | boolean | undefined>;
 }
 
 interface StreamEntry {
@@ -216,6 +218,8 @@ export async function emitAgentStep(client: RedisClientType, input: EmitAgentSte
       createdAt,
       reason: input.reason,
       previousStreamId: input.previousStreamId,
+      mode: input.mode,
+      ...(input.extra ?? {}),
     }),
   );
 }

@@ -8,7 +8,13 @@
       }
     ],
     "allowJs": true,
-    "incremental": true
+    "incremental": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./*"],
+      "@flowpr/schemas": ["../../packages/schemas/src"],
+      "@flowpr/tools": ["../../packages/tools/src"]
+    }
   },
   "include": [
     "next-env.d.ts",

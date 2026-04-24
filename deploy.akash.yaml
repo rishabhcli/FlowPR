@@ -1,0 +1,61 @@
+---
+version: "2.0"
+
+services:
+  flowpr:
+    image: ghcr.io/rishabhcli/flowpr:latest
+    env:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_APP_URL
+      - FLOWPR_AGENT_NAME=flowpr-autonomous-frontend-qa
+      - FLOWPR_AGENT_VERSION
+      - REDIS_URL
+      - TINYFISH_API_KEY
+      - TINYFISH_API_BASE_URL
+      - INSFORGE_API_URL
+      - INSFORGE_ANON_KEY
+      - INSFORGE_API_KEY
+      - INSFORGE_ARTIFACT_BUCKET
+      - WUNDERGRAPH_API_URL
+      - WUNDERGRAPH_API_KEY
+      - WUNDERGRAPH_MCP_URL
+      - GUILD_AI_API_KEY
+      - GUILD_AI_WORKSPACE
+      - GUILD_AI_AGENT_ID
+      - GUILD_GITHUB_APP_INSTALLED
+      - SENSO_API_KEY
+      - SENSO_API_BASE_URL
+      - SENSO_KB_ID
+      - SHIPABLES_API_KEY
+      - GITHUB_TOKEN
+      - GITHUB_APP_ID
+      - GITHUB_APP_PRIVATE_KEY
+      - AKASH_NETWORK=mainnet
+    expose:
+      - port: 3000
+        as: 80
+        to:
+          - global: true
+
+profiles:
+  compute:
+    flowpr:
+      resources:
+        cpu:
+          units: 2
+        memory:
+          size: 2Gi
+        storage:
+          size: 8Gi
+  placement:
+    akash:
+      pricing:
+        flowpr:
+          denom: uakt
+          amount: 10000
+
+deployment:
+  flowpr:
+    akash:
+      profile: flowpr
+      count: 1

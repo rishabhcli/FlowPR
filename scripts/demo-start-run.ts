@@ -14,6 +14,7 @@ const response = await fetch(`${appUrl.replace(/\/+$/, '')}/api/runs/start`, {
       process.env.FLOWPR_DEMO_FLOW_GOAL ??
       'On mobile, choose Pro on pricing, complete checkout, and reach success.',
     riskLevel: process.env.FLOWPR_DEMO_RISK_LEVEL ?? 'medium',
+    permissionProfile: process.env.FLOWPR_DEMO_PERMISSION_PROFILE ?? 'draft-pr-only',
   }),
 });
 const body = await response.json();

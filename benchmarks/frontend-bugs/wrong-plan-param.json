@@ -1,0 +1,12 @@
+{
+  "name": "wrong-plan-param",
+  "flowGoal": "Selecting Pro on pricing must pass plan=pro to the checkout route.",
+  "expectedBugType": "client_navigation_failure",
+  "successCondition": "Checkout page shows the Pro plan total and reaches /success.",
+  "riskLevel": "medium",
+  "viewport": { "width": 390, "height": 844 },
+  "fixtures": {
+    "previewUrl": "http://localhost:3100",
+    "expectedFilesChanged": ["apps/demo-target/app/page.tsx"]
+  }
+}

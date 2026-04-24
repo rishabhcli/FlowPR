@@ -1,0 +1,94 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Warm-dark palette tuned for FlowPR. */
+    --background: 30 8% 7%;
+    --foreground: 40 30% 94%;
+
+    --card: 30 10% 10%;
+    --card-foreground: 40 30% 94%;
+
+    --popover: 30 10% 9%;
+    --popover-foreground: 40 30% 94%;
+
+    --primary: 152 55% 60%;
+    --primary-foreground: 30 20% 8%;
+
+    --secondary: 30 8% 16%;
+    --secondary-foreground: 40 30% 94%;
+
+    --muted: 30 6% 14%;
+    --muted-foreground: 32 12% 65%;
+
+    --accent: 30 8% 18%;
+    --accent-foreground: 40 30% 94%;
+
+    --destructive: 10 90% 72%;
+    --destructive-foreground: 0 0% 10%;
+
+    --success: 152 55% 60%;
+    --success-foreground: 152 40% 10%;
+
+    --warning: 38 85% 66%;
+    --warning-foreground: 30 40% 10%;
+
+    --border: 30 8% 20%;
+    --input: 30 8% 18%;
+    --ring: 152 55% 60%;
+
+    --radius: 0.625rem;
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: 'cv11', 'ss01', 'ss03';
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  ::selection {
+    background: hsl(var(--primary) / 0.3);
+    color: hsl(var(--foreground));
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .bg-grid {
+    background-image: var(--tw-gradient-to, none),
+      linear-gradient(to right, hsl(var(--border) / 0.3) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(var(--border) / 0.3) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+
+  .bg-radial-spot {
+    background: radial-gradient(
+      circle at top,
+      hsl(var(--primary) / 0.14),
+      transparent 55%
+    );
+  }
+
+  .skeleton-shimmer {
+    background: linear-gradient(
+      90deg,
+      hsl(var(--muted)) 0%,
+      hsl(var(--muted) / 0.6) 40%,
+      hsl(var(--muted)) 80%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 2.4s linear infinite;
+  }
+}

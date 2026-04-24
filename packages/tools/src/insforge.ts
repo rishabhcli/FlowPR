@@ -18,6 +18,7 @@ import type {
   HypothesisConfidence,
   PatchRecord,
   PatchStatus,
+  PermissionProfile,
   PolicyHit,
   ProviderArtifact,
   ProviderArtifactInput,
@@ -67,6 +68,7 @@ interface RunRow {
   flow_goal: string;
   status: RunStatus;
   risk_level: RiskLevel;
+  permission_profile?: PermissionProfile | null;
   agent_name: string;
   agent_version: string;
   guild_trace_id?: string | null;
@@ -524,6 +526,7 @@ function mapRun(row: RunRow): FlowPrRun {
     flowGoal: row.flow_goal,
     status: row.status,
     riskLevel: row.risk_level,
+    permissionProfile: row.permission_profile ?? 'draft-pr-only',
     agentName: row.agent_name,
     agentVersion: row.agent_version,
     guildTraceId: row.guild_trace_id ?? undefined,
@@ -820,6 +823,7 @@ export async function createRun(input: RunStartInput): Promise<FlowPrRun> {
     flow_goal: input.flowGoal,
     status: 'queued' satisfies RunStatus,
     risk_level: input.riskLevel,
+    permission_profile: input.permissionProfile,
     agent_name: process.env.FLOWPR_AGENT_NAME ?? 'flowpr-autonomous-frontend-qa',
     agent_version: process.env.FLOWPR_AGENT_VERSION ?? '0.1.0',
     started_at: now,

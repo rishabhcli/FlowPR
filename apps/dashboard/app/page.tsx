@@ -1,63 +1,86 @@
 'use client';
 
-import { FormEvent, useEffect, useMemo, useState } from 'react';
-import type { FlowPrRun, RunDetail, RiskLevel } from '@flowpr/schemas';
+import Link from 'next/link';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  AlertTriangle,
+  ArrowRight,
+  CheckCircle2,
+  ExternalLink,
+  GitBranch,
+  Info,
+  Radio,
+} from 'lucide-react';
+import type { FlowPrRun, RiskLevel, RunDetail } from '@flowpr/schemas';
+import { labelRiskLevel, labelRunStatus } from '@flowpr/schemas';
 
-interface SponsorStatus {
-  sponsor: string;
-  state: 'live' | 'not_configured' | 'failed' | 'local_artifact';
-  summary: string;
-  checkedAt: string;
-  metadata?: Record<string, unknown>;
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader } from '@/components/ui/card';
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from '@/components/ui/tabs';
+import { ScrollArea } from '@/components/ui/scroll-area';
+
+import { SiteHeader } from '@/components/flowpr/site-header';
+import { RunForm } from '@/components/flowpr/run-form';
+import { RunList } from '@/components/flowpr/run-list';
+import { PhaseStepper } from '@/components/flowpr/phase-stepper';
+import { Timeline } from '@/components/flowpr/timeline';
+import { EvidenceCard } from '@/components/flowpr/evidence-card';
+import { DiagnosisCard } from '@/components/flowpr/diagnosis-card';
+import { PatchCard } from '@/components/flowpr/patch-card';
+import { PrCard } from '@/components/flowpr/pr-card';
+import { ReadinessMeter } from '@/components/flowpr/readiness-meter';
+import {
+  SponsorRail,
+  type SponsorStatus,
+} from '@/components/flowpr/sponsor-rail';
+import { StateBadge } from '@/components/flowpr/state-badge';
+import { formatDateTime } from '@/lib/format';
+
+interface ValidationIssue {
+  field: string;
+  code: string;
+  message: string;
+  suggestion?: string;
+  severity: 'error' | 'warning';
 }
 
-const defaultInput = {
-  repoUrl: 'https://github.com/rishabhcli/FlowPR',
-  previewUrl: 'http://localhost:3100',
-  baseBranch: 'main',
-  flowGoal: 'On mobile, choose Pro on pricing, complete checkout, and reach success.',
-  riskLevel: 'medium' as RiskLevel,
-};
-
-function formatTime(value?: string) {
-  if (!value) return 'Pending';
-
-  return new Intl.DateTimeFormat(undefined, {
-    hour: 'numeric',
-    minute: '2-digit',
-    second: '2-digit',
-  }).format(new Date(value));
-}
-
-function stateLabel(state: SponsorStatus['state']) {
-  if (state === 'not_configured') return 'not configured';
-  if (state === 'local_artifact') return 'local artifact';
-
-  return state;
+interface ReadinessResponse {
+  runId: string;
+  overall: 'ready' | 'partial' | 'missing';
+  readyCount: number;
+  partialCount: number;
+  missingCount: number;
+  items: Array<{
+    sponsor: string;
+    artifactType: string;
+    description: string;
+    state: 'ready' | 'partial' | 'missing';
+    found: number;
+    latest?: { providerId?: string; url?: string; createdAt: string };
+  }>;
 }
 
 export default function DashboardPage() {
-  const [repoUrl, setRepoUrl] = useState(defaultInput.repoUrl);
-  const [previewUrl, setPreviewUrl] = useState(defaultInput.previewUrl);
-  const [baseBranch, setBaseBranch] = useState(defaultInput.baseBranch);
-  const [flowGoal, setFlowGoal] = useState(defaultInput.flowGoal);
-  const [riskLevel, setRiskLevel] = useState<RiskLevel>(defaultInput.riskLevel);
   const [runs, setRuns] = useState<FlowPrRun[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string>();
   const [runDetail, setRunDetail] = useState<RunDetail | null>(null);
+  const [readiness, setReadiness] = useState<ReadinessResponse | null>(null);
   const [sponsorStatuses, setSponsorStatuses] = useState<SponsorStatus[]>([]);
   const [isStarting, setIsStarting] = useState(false);
   const [notice, setNotice] = useState<string>();
   const [error, setError] = useState<string>();
+  const [issues, setIssues] = useState<ValidationIssue[]>([]);
 
   async function loadRuns() {
     const response = await fetch('/api/runs', { cache: 'no-store' });
     const body = await response.json();
-
-    if (!response.ok) {
-      throw new Error(body.error ?? 'Failed to load runs');
-    }
-
+    if (!response.ok) throw new Error(body.error ?? 'Failed to load runs');
     setRuns(body.runs);
     setSelectedRunId((current) => current ?? body.runs[0]?.id);
   }
@@ -65,388 +88,353 @@ export default function DashboardPage() {
   async function loadSponsorStatuses() {
     const response = await fetch('/api/sponsors/status', { cache: 'no-store' });
     const body = await response.json();
-
-    if (!response.ok) {
+    if (!response.ok)
       throw new Error(body.error ?? 'Failed to load sponsor status');
-    }
-
     setSponsorStatuses(body.statuses);
   }
 
   async function loadRunDetail(runId: string) {
     const response = await fetch(`/api/runs/${runId}`, { cache: 'no-store' });
     const body = await response.json();
-
-    if (!response.ok) {
-      throw new Error(body.error ?? 'Failed to load run detail');
-    }
-
+    if (!response.ok) throw new Error(body.error ?? 'Failed to load run detail');
     setRunDetail(body);
   }
 
-  useEffect(() => {
-    loadRuns().catch((loadError: unknown) => {
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
+  async function loadReadiness(runId: string) {
+    const response = await fetch(`/api/runs/${runId}/readiness`, {
+      cache: 'no-store',
     });
+    if (!response.ok) return;
+    const body = (await response.json()) as ReadinessResponse;
+    setReadiness(body);
+  }
 
-    loadSponsorStatuses().catch((loadError: unknown) => {
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
+  useEffect(() => {
+    loadRuns().catch((e: unknown) => {
+      setError(e instanceof Error ? e.message : String(e));
+    });
+    loadSponsorStatuses().catch((e: unknown) => {
+      setError(e instanceof Error ? e.message : String(e));
     });
   }, []);
 
   useEffect(() => {
     if (!selectedRunId) return;
 
-    loadRunDetail(selectedRunId).catch((loadError: unknown) => {
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
+    loadRunDetail(selectedRunId).catch((e: unknown) => {
+      setError(e instanceof Error ? e.message : String(e));
     });
+    loadReadiness(selectedRunId).catch(() => undefined);
 
     const interval = window.setInterval(() => {
       loadRunDetail(selectedRunId).catch(() => undefined);
+      loadReadiness(selectedRunId).catch(() => undefined);
       loadRuns().catch(() => undefined);
     }, 5000);
-
     return () => window.clearInterval(interval);
   }, [selectedRunId]);
 
-  const liveCount = useMemo(
-    () => sponsorStatuses.filter((status) => status.state === 'live').length,
+  const liveSponsors = useMemo(
+    () => sponsorStatuses.filter((s) => s.state === 'live').length,
     [sponsorStatuses],
   );
-  const redisArtifacts = useMemo(
-    () => runDetail?.providerArtifacts.filter((artifact) => artifact.sponsor === 'redis') ?? [],
-    [runDetail],
-  );
 
-  async function startRun(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function startRun(input: {
+    repoUrl: string;
+    previewUrl: string;
+    baseBranch: string;
+    flowGoal: string;
+    riskLevel: RiskLevel;
+  }) {
     setIsStarting(true);
     setError(undefined);
     setNotice(undefined);
+    setIssues([]);
 
     try {
       const response = await fetch('/api/runs/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          repoUrl,
-          previewUrl,
-          baseBranch,
-          flowGoal,
-          riskLevel,
-        }),
+        body: JSON.stringify(input),
       });
       const body = await response.json();
 
       if (!response.ok) {
+        if (Array.isArray(body.issues)) {
+          setIssues(body.issues as ValidationIssue[]);
+        }
         throw new Error(body.error ?? 'Failed to start run');
       }
 
       setSelectedRunId(body.run.id);
+      setIssues(
+        Array.isArray(body.issues)
+          ? (body.issues as ValidationIssue[]).filter(
+              (issue) => issue.severity === 'warning',
+            )
+          : [],
+      );
       setNotice(
         body.warnings?.length
-          ? `Run created with warnings: ${body.warnings.join(' ')}`
+          ? 'Run created. Review the warnings below — FlowPR will continue but you may want to address them.'
           : 'Run created and queued through Redis.',
       );
       await loadRuns();
       await loadRunDetail(body.run.id);
+      await loadReadiness(body.run.id);
     } catch (startError) {
-      setError(startError instanceof Error ? startError.message : String(startError));
+      setError(
+        startError instanceof Error ? startError.message : String(startError),
+      );
     } finally {
       setIsStarting(false);
     }
   }
 
+  const run = runDetail?.run;
+  const tinyfishAgent = runDetail?.browserObservations.find(
+    (obs) => obs.provider === 'tinyfish' && !obs.providerRunId?.startsWith('remote-'),
+  );
+  const tinyfishRemote = runDetail?.browserObservations.find(
+    (obs) =>
+      obs.provider === 'tinyfish' && obs.providerRunId?.startsWith('remote-'),
+  );
+  const playwrightLocal = runDetail?.browserObservations.find(
+    (obs) => obs.provider === 'playwright',
+  );
+  const latestHypothesis = runDetail?.bugHypotheses[runDetail.bugHypotheses.length - 1];
+  const latestPatch = runDetail?.patches[runDetail.patches.length - 1];
+  const latestPr = runDetail?.pullRequests[runDetail.pullRequests.length - 1];
+
   return (
-    <main className="shell">
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">FlowPR command center</p>
-          <h1>Run real frontend QA against a live app.</h1>
-        </div>
-        <div className="health-pill">
-          <strong>{liveCount}</strong>
-          <span>live sponsor checks</span>
-        </div>
-      </header>
+    <>
+      <SiteHeader />
 
-      {(notice || error) && (
-        <section className={error ? 'banner error' : 'banner'}>
-          <span>{error ?? notice}</span>
-        </section>
-      )}
+      <main className="relative">
+        <div className="absolute inset-x-0 top-0 -z-10 h-[420px] bg-radial-spot" />
+        <div className="absolute inset-x-0 top-0 -z-10 h-[420px] bg-grid opacity-[0.18]" />
 
-      <section className="workspace">
-        <form className="run-form" onSubmit={startRun}>
-          <h2>Start Run</h2>
-          <label>
-            <span>GitHub repository</span>
-            <input value={repoUrl} onChange={(event) => setRepoUrl(event.target.value)} />
-          </label>
-          <label>
-            <span>Production or preview URL</span>
-            <input value={previewUrl} onChange={(event) => setPreviewUrl(event.target.value)} />
-          </label>
-          <div className="field-row">
-            <label>
-              <span>Base branch</span>
-              <input value={baseBranch} onChange={(event) => setBaseBranch(event.target.value)} />
-            </label>
-            <label>
-              <span>Risk</span>
-              <select value={riskLevel} onChange={(event) => setRiskLevel(event.target.value as RiskLevel)}>
-                <option value="low">low</option>
-                <option value="medium">medium</option>
-                <option value="high">high</option>
-                <option value="critical">critical</option>
-              </select>
-            </label>
-          </div>
-          <label>
-            <span>Flow goal</span>
-            <textarea value={flowGoal} onChange={(event) => setFlowGoal(event.target.value)} rows={4} />
-          </label>
-          <button disabled={isStarting} type="submit">
-            {isStarting ? 'Starting...' : 'Start run'}
-          </button>
-        </form>
-
-        <section className="live-panel">
-          <div className="panel-heading">
-            <h2>Current Run</h2>
-            <span>{runDetail?.run.status ?? 'No run selected'}</span>
-          </div>
-
-          {runDetail ? (
-            <>
-              <dl className="run-facts">
-                <div>
-                  <dt>Repo</dt>
-                  <dd>{runDetail.run.owner}/{runDetail.run.repo}</dd>
+        <div className="mx-auto max-w-7xl px-6 py-10">
+          <section className="mb-10 grid gap-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+            <div>
+              <p className="mb-3 inline-flex items-center gap-2 rounded-full border border-border bg-card/60 px-3 py-1 text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
+                <Radio className="h-3 w-3 text-primary" />
+                FlowPR · Command Center
+              </p>
+              <h1 className="font-display text-balance text-4xl font-semibold leading-[1.05] tracking-tight sm:text-5xl lg:text-6xl">
+                Frontend QA that{' '}
+                <span className="text-primary">ships the patch.</span>
+              </h1>
+              <p className="mt-4 max-w-2xl text-base text-muted-foreground">
+                Describe the journey, point at a preview URL. FlowPR drives a real
+                browser, explains what broke, fixes the code, re-verifies, and
+                opens a pull request — with live sponsor evidence attached.
+              </p>
+              <div className="mt-6 flex flex-wrap items-center gap-3">
+                <div className="inline-flex items-center gap-1.5 rounded-full border border-success/40 bg-success/5 px-3 py-1 text-xs text-success">
+                  <CheckCircle2 className="h-3 w-3" /> {liveSponsors} sponsor
+                  provider{liveSponsors === 1 ? '' : 's'} live
                 </div>
-                <div>
-                  <dt>Preview</dt>
-                  <dd>{runDetail.run.previewUrl}</dd>
-                </div>
-                <div>
-                  <dt>Flow</dt>
-                  <dd>{runDetail.run.flowGoal}</dd>
-                </div>
-              </dl>
+                <Link
+                  href="/demo"
+                  className="inline-flex items-center gap-1 text-xs text-muted-foreground transition hover:text-foreground"
+                >
+                  View demo <ArrowRight className="h-3 w-3" />
+                </Link>
+              </div>
+            </div>
+            <SponsorRail
+              statuses={sponsorStatuses}
+              variant="compact"
+              className="max-w-sm"
+            />
+          </section>
 
-              <div className="timeline">
-                {runDetail.timelineEvents.length === 0 ? (
-                  <p>No timeline events have been recorded yet.</p>
-                ) : (
-                  runDetail.timelineEvents.map((eventItem) => (
-                    <div className="timeline-item" key={eventItem.id}>
-                      <time>{formatTime(eventItem.createdAt)}</time>
-                      <div>
-                        <strong>#{eventItem.sequence} {eventItem.title}</strong>
-                        <span>{eventItem.actor} / {eventItem.phase} / {eventItem.status}</span>
+          {error && (
+            <Alert variant="destructive" className="mb-4">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertTitle>Something broke</AlertTitle>
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
+
+          {notice && !error && (
+            <Alert variant="success" className="mb-4">
+              <CheckCircle2 className="h-4 w-4" />
+              <AlertDescription>{notice}</AlertDescription>
+            </Alert>
+          )}
+
+          {issues.length > 0 && (
+            <Alert variant="warning" className="mb-4">
+              <Info className="h-4 w-4" />
+              <AlertTitle>Validation notes</AlertTitle>
+              <AlertDescription>
+                <ul className="mt-2 space-y-1 text-xs">
+                  {issues.map((issue, i) => (
+                    <li key={`${issue.field}-${i}`}>
+                      <span className="font-medium text-foreground">
+                        {issue.field}:
+                      </span>{' '}
+                      {issue.message}
+                      {issue.suggestion && (
+                        <span className="block pl-4 text-muted-foreground">
+                          ↳ {issue.suggestion}
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </AlertDescription>
+            </Alert>
+          )}
+
+          <div className="grid gap-6 lg:grid-cols-12">
+            <div className="space-y-6 lg:col-span-5">
+              <Card>
+                <CardHeader className="pb-3">
+                  <p className="text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
+                    New run
+                  </p>
+                  <p className="text-xl font-semibold tracking-tight">
+                    Describe a journey
+                  </p>
+                </CardHeader>
+                <CardContent>
+                  <RunForm onStart={startRun} isStarting={isStarting} />
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
+                  <div>
+                    <p className="text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
+                      Recent runs
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      {runs.length} total
+                    </p>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <RunList
+                    runs={runs}
+                    selectedRunId={selectedRunId}
+                    onSelect={setSelectedRunId}
+                  />
+                </CardContent>
+              </Card>
+            </div>
+
+            <div className="space-y-6 lg:col-span-7">
+              {run ? (
+                <Card className="overflow-hidden">
+                  <CardHeader className="space-y-4 border-b border-border/60 bg-card/30">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[11px] uppercase tracking-widest text-muted-foreground">
+                          Live run
+                        </p>
+                        <h2 className="mt-1 text-balance text-lg font-semibold leading-snug text-foreground">
+                          {run.flowGoal}
+                        </h2>
+                        <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                          <span className="inline-flex items-center gap-1 font-mono">
+                            <GitBranch className="h-3 w-3" />
+                            {run.owner}/{run.repo}@{run.baseBranch}
+                          </span>
+                          <span>·</span>
+                          <span>{formatDateTime(run.startedAt ?? run.createdAt)}</span>
+                        </div>
+                      </div>
+                      <div className="flex flex-col items-end gap-1.5">
+                        <StateBadge state={run.status} label={labelRunStatus(run.status)} />
+                        <StateBadge state={run.riskLevel} label={labelRiskLevel(run.riskLevel)} />
+                        <Button asChild variant="ghost" size="sm" className="text-xs">
+                          <Link href={`/runs/${run.id}`}>
+                            Full detail <ExternalLink className="h-3 w-3" />
+                          </Link>
+                        </Button>
                       </div>
                     </div>
-                  ))
-                )}
-              </div>
 
-              <div className="evidence-grid">
-                <section>
-                  <h3>Provider Artifacts</h3>
-                  <ul>
-                    {runDetail.providerArtifacts.map((artifact) => (
-                      <li key={artifact.id}>
-                        <strong>{artifact.sponsor}</strong>
-                        <span>{artifact.artifactType}</span>
-                        <code>{artifact.providerId ?? 'recorded'}</code>
-                      </li>
-                    ))}
-                  </ul>
-                </section>
-                <section>
-                  <h3>Redis Runtime</h3>
-                  <ul>
-                    {redisArtifacts.map((artifact) => (
-                      <li key={artifact.id}>
-                        <strong>{artifact.artifactType}</strong>
-                        <span>
-                          {String(artifact.requestSummary.stream ?? artifact.requestSummary.lockKey ?? 'redis')}
-                        </span>
-                        <code>{artifact.providerId ?? 'recorded'}</code>
-                      </li>
-                    ))}
-                    {redisArtifacts.length === 0 && (
-                      <li>
-                        <strong>Waiting</strong>
-                        <span>No Redis runtime artifacts yet.</span>
-                        <code>queued</code>
-                      </li>
-                    )}
-                  </ul>
-                </section>
-                <section>
-                  <h3>Browser Evidence</h3>
-                  <ul className="browser-evidence-list">
-                    {runDetail.browserObservations.map((observation) => (
-                      <li className={`browser-evidence ${observation.status}`} key={observation.id}>
-                        <div className="browser-evidence-header">
-                          <strong>{observation.provider}</strong>
-                          <code>{observation.status}</code>
+                    <PhaseStepper current={run.status} variant="large" />
+                  </CardHeader>
+
+                  <CardContent className="p-5">
+                    <Tabs defaultValue="evidence" className="w-full">
+                      <TabsList>
+                        <TabsTrigger value="evidence">Evidence</TabsTrigger>
+                        <TabsTrigger value="diagnosis">Diagnosis</TabsTrigger>
+                        <TabsTrigger value="patch">Patch & PR</TabsTrigger>
+                        <TabsTrigger value="timeline">Timeline</TabsTrigger>
+                        <TabsTrigger value="readiness">Readiness</TabsTrigger>
+                      </TabsList>
+
+                      <TabsContent value="evidence" className="space-y-4">
+                        <div className="grid gap-4 md:grid-cols-3">
+                          <EvidenceCard
+                            observation={tinyfishAgent}
+                            label="TinyFish Agent"
+                            description="Streaming agent with stealth profile"
+                          />
+                          <EvidenceCard
+                            observation={tinyfishRemote}
+                            label="TinyFish Browser"
+                            description="Remote CDP session"
+                          />
+                          <EvidenceCard
+                            observation={playwrightLocal}
+                            label="Local Playwright"
+                            description="Mobile viewport 390×844"
+                          />
                         </div>
-                        <span>{observation.failedStep ?? 'full flow'}</span>
-                        <p>{observation.observedBehavior ?? 'Evidence recorded.'}</p>
-                        <div className="evidence-links">
-                          {observation.screenshotUrl && (
-                            <a href={observation.screenshotUrl} rel="noreferrer" target="_blank">
-                              Screenshot
-                            </a>
-                          )}
-                          {observation.traceUrl && (
-                            <a href={observation.traceUrl} rel="noreferrer" target="_blank">
-                              Trace
-                            </a>
-                          )}
-                        </div>
-                        <code>{observation.providerRunId ?? observation.severity}</code>
-                      </li>
-                    ))}
-                    {runDetail.browserObservations.length === 0 && (
-                      <li>
-                        <strong>Waiting</strong>
-                        <span>No TinyFish or Playwright browser evidence yet.</span>
-                        <code>queued</code>
-                      </li>
-                    )}
-                  </ul>
-                </section>
-                <section>
-                  <h3>Policy Hits</h3>
-                  <ul>
-                    {runDetail.policyHits.map((policyHit) => (
-                      <li key={policyHit.id}>
-                        <strong>{policyHit.provider}</strong>
-                        <span>{policyHit.title ?? 'policy context'}</span>
-                        <code>{policyHit.score ?? 'recorded'}</code>
-                      </li>
-                    ))}
-                  </ul>
-                </section>
-                <section>
-                  <h3>Agent Control</h3>
-                  <ul>
-                    {runDetail.agentSessions.map((session) => (
-                      <li key={session.id}>
-                        <strong>{session.sponsor}</strong>
-                        <span>{session.status}</span>
-                        <code>{session.providerSessionId ?? 'session'}</code>
-                      </li>
-                    ))}
-                    {runDetail.actionGates.map((gate) => (
-                      <li key={gate.id}>
-                        <strong>{gate.gateType}</strong>
-                        <span>{gate.status}</span>
-                        <code>{gate.riskLevel}</code>
-                      </li>
-                    ))}
-                  </ul>
-                </section>
-                <section>
-                  <h3>Verification</h3>
-                  <ul>
-                    {runDetail.verificationResults.map((result) => (
-                      <li key={result.id}>
-                        <strong>{result.provider}</strong>
-                        <span>{result.status}</span>
-                        <code>{result.artifacts.length} artifacts</code>
-                      </li>
-                    ))}
-                    {runDetail.benchmarkEvaluations.map((evaluation) => (
-                      <li key={evaluation.id}>
-                        <strong>{evaluation.benchmarkName}</strong>
-                        <span>{evaluation.status}</span>
-                        <code>{evaluation.score ?? 'n/a'}</code>
-                      </li>
-                    ))}
-                  </ul>
-                </section>
-                <section>
-                  <h3>Fix Records</h3>
-                  <ul>
-                    {runDetail.bugHypotheses.map((hypothesis) => (
-                      <li key={hypothesis.id}>
-                        <strong>{hypothesis.severity}</strong>
-                        <span>{hypothesis.summary}</span>
-                        <code>{hypothesis.confidence}</code>
-                      </li>
-                    ))}
-                    {runDetail.patches.map((patch) => (
-                      <li key={patch.id}>
-                        <strong>{patch.status}</strong>
-                        <span>{patch.summary}</span>
-                        <code>{patch.branchName ?? 'patch'}</code>
-                      </li>
-                    ))}
-                    {runDetail.pullRequests.map((pullRequest) => (
-                      <li key={pullRequest.id}>
-                        <strong>{pullRequest.provider}</strong>
-                        <span>{pullRequest.status}</span>
-                        <code>{pullRequest.number ?? pullRequest.branchName}</code>
-                      </li>
-                    ))}
-                  </ul>
-                </section>
-              </div>
-            </>
-          ) : (
-            <p className="empty">Start a run or select one from recent runs.</p>
-          )}
-        </section>
-      </section>
+                      </TabsContent>
 
-      <section className="lower-grid">
-        <section>
-          <div className="panel-heading">
-            <h2>Recent Runs</h2>
-            <button className="small-button" type="button" onClick={() => loadRuns()}>
-              Refresh
-            </button>
-          </div>
-          <div className="run-list">
-            {runs.map((run) => (
-              <button
-                className={selectedRunId === run.id ? 'run-row selected' : 'run-row'}
-                key={run.id}
-                type="button"
-                onClick={() => setSelectedRunId(run.id)}
-              >
-                <span>{run.owner}/{run.repo}</span>
-                <strong>{run.status}</strong>
-                <time>{formatTime(run.createdAt)}</time>
-              </button>
-            ))}
-          </div>
-        </section>
+                      <TabsContent value="diagnosis">
+                        <DiagnosisCard hypothesis={latestHypothesis} />
+                      </TabsContent>
 
-        <section>
-          <div className="panel-heading">
-            <h2>Sponsor Proof</h2>
-            <button className="small-button" type="button" onClick={() => loadSponsorStatuses()}>
-              Check
-            </button>
+                      <TabsContent value="patch" className="grid gap-4 md:grid-cols-2">
+                        <PatchCard patch={latestPatch} />
+                        <PrCard pullRequest={latestPr} />
+                      </TabsContent>
+
+                      <TabsContent value="timeline">
+                        <ScrollArea className="h-[480px] rounded-md border border-border bg-card/30 p-3">
+                          <Timeline
+                            events={runDetail?.timelineEvents ?? []}
+                            emptyLabel="Timeline appears here as FlowPR works."
+                          />
+                        </ScrollArea>
+                      </TabsContent>
+
+                      <TabsContent value="readiness">
+                        <ReadinessMeter readiness={readiness} />
+                      </TabsContent>
+                    </Tabs>
+                  </CardContent>
+                </Card>
+              ) : (
+                <Card className="border-dashed bg-card/40">
+                  <CardContent className="flex flex-col items-center justify-center gap-3 p-16 text-center">
+                    <Radio className="h-8 w-8 text-muted-foreground" />
+                    <div>
+                      <p className="text-base font-medium text-foreground">
+                        Start a run to see it here.
+                      </p>
+                      <p className="mt-1 max-w-md text-sm text-muted-foreground">
+                        Fill out the form on the left, or select a recent run to
+                        replay it in the command center.
+                      </p>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
           </div>
-          <ul className="sponsor-list">
-            {sponsorStatuses.map((status) => (
-              <li key={status.sponsor}>
-                <div>
-                  <strong>{status.sponsor}</strong>
-                  <span>{status.summary}</span>
-                </div>
-                <code className={status.state}>{stateLabel(status.state)}</code>
-              </li>
-            ))}
-          </ul>
-        </section>
-      </section>
-    </main>
+        </div>
+      </main>
+    </>
   );
 }

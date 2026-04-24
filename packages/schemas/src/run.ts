@@ -41,6 +41,14 @@ export type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
 
 export const riskLevels: RiskLevel[] = ['low', 'medium', 'high', 'critical'];
 
+export type PermissionProfile = 'investigation-only' | 'draft-pr-only' | 'verified-pr';
+
+export const permissionProfiles: PermissionProfile[] = [
+  'investigation-only',
+  'draft-pr-only',
+  'verified-pr',
+];
+
 export interface FlowPrRun {
   id: string;
   projectId: string;
@@ -53,6 +61,7 @@ export interface FlowPrRun {
   flowGoal: string;
   status: RunStatus;
   riskLevel: RiskLevel;
+  permissionProfile: PermissionProfile;
   agentName: string;
   agentVersion: string;
   guildTraceId?: string;
@@ -69,6 +78,7 @@ export interface RunStartInput {
   flowGoal: string;
   baseBranch: string;
   riskLevel: RiskLevel;
+  permissionProfile: PermissionProfile;
 }
 
 export interface GitHubRepoRef {
@@ -369,6 +379,9 @@ export function parseRunStartInput(input: unknown): RunStartInput {
   const flowGoal = requiredString(value.flowGoal, 'flowGoal');
   const baseBranch = requiredString(value.baseBranch ?? 'main', 'baseBranch');
   const riskLevel = value.riskLevel === undefined ? 'medium' : requiredString(value.riskLevel, 'riskLevel');
+  const permissionProfile = value.permissionProfile === undefined
+    ? 'draft-pr-only'
+    : requiredString(value.permissionProfile, 'permissionProfile');
 
   parseGitHubRepoUrl(repoUrl);
 
@@ -386,12 +399,17 @@ export function parseRunStartInput(input: unknown): RunStartInput {
     throw new Error(`riskLevel must be one of: ${riskLevels.join(', ')}`);
   }
 
+  if (!permissionProfiles.includes(permissionProfile as PermissionProfile)) {
+    throw new Error(`permissionProfile must be one of: ${permissionProfiles.join(', ')}`);
+  }
+
   return {
     repoUrl,
     previewUrl,
     flowGoal,
     baseBranch,
     riskLevel: riskLevel as RiskLevel,
+    permissionProfile: permissionProfile as PermissionProfile,
   };
 }
 
@@ -401,6 +419,7 @@ export function createDraftRun(input: {
   flowGoal: string;
   baseBranch?: string;
   riskLevel?: RiskLevel;
+  permissionProfile?: PermissionProfile;
 }): FlowPrRun {
   const now = new Date().toISOString();
   const repoRef = parseGitHubRepoUrl(input.repoUrl);
@@ -416,6 +435,7 @@ export function createDraftRun(input: {
     flowGoal: input.flowGoal,
     status: 'queued',
     riskLevel: input.riskLevel ?? 'medium',
+    permissionProfile: input.permissionProfile ?? 'draft-pr-only',
     agentName: 'flowpr-autonomous-frontend-qa',
     agentVersion: '0.1.0',
     createdAt: now,

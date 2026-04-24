@@ -1,6 +1,6 @@
 {
-  "version": "0.1.0",
-  "keywords": ["frontend", "qa", "browser", "pull-request", "agent"],
+  "version": "1.0.0",
+  "keywords": ["frontend", "qa", "browser", "playwright", "pull-request", "agent", "autonomous"],
   "categories": ["developer-tools", "testing", "ai-ml"],
   "config": {
     "env": [
@@ -8,10 +8,18 @@
       { "name": "REDIS_URL", "required": true, "secret": true },
       { "name": "INSFORGE_API_URL", "required": true, "secret": false },
       { "name": "INSFORGE_API_KEY", "required": true, "secret": true },
-      { "name": "GUILD_AI_API_KEY", "required": true, "secret": true },
+      { "name": "GUILD_AI_API_KEY", "required": false, "secret": true },
+      { "name": "GUILD_AI_WORKSPACE", "required": false, "secret": false },
       { "name": "GITHUB_TOKEN", "required": true, "secret": true },
-      { "name": "SENSO_API_KEY", "required": false, "secret": true }
+      { "name": "SENSO_API_KEY", "required": false, "secret": true },
+      { "name": "WUNDERGRAPH_API_URL", "required": false, "secret": false },
+      { "name": "WUNDERGRAPH_API_KEY", "required": false, "secret": true }
     ]
+  },
+  "entrypoints": {
+    "healthcheck": "scripts/healthcheck.js",
+    "run_flow_test": "scripts/run-flow-test.js",
+    "create_pr": "scripts/create-pr.js",
+    "verify_fix": "scripts/verify-fix.js"
   }
 }
-

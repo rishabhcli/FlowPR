@@ -1,0 +1,12 @@
+{
+  "name": "keyboard-focus-trap",
+  "flowGoal": "Tab through checkout and submit using keyboard only.",
+  "expectedBugType": "blocked_cta",
+  "successCondition": "Keyboard focus reaches Pay now and activates it.",
+  "riskLevel": "high",
+  "viewport": { "width": 1024, "height": 768 },
+  "fixtures": {
+    "previewUrl": "http://localhost:3100/checkout?plan=pro",
+    "expectedFilesChanged": ["apps/demo-target/app/checkout/page.tsx"]
+  }
+}

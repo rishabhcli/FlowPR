@@ -18,7 +18,9 @@
     "phase4:checkout-test": "pnpm --filter @flowpr/demo-target test:checkout",
     "redis:smoke": "tsx scripts/redis-phase3-smoke.ts",
     "guild:evaluate": "tsx scripts/guild-evaluate.ts",
+    "senso:ingest": "tsx scripts/senso-ingest.ts",
     "skill:dry-run": "pnpm --dir skills/flowpr-autonomous-frontend-qa skill:dry-run",
+    "start:runtime": "node scripts/start-runtime.mjs",
     "mcp:list": "codex mcp list"
   },
   "devDependencies": {

@@ -1,0 +1,12 @@
+{
+  "name": "api-route-404",
+  "flowGoal": "Load pricing, select Pro, and ensure the checkout API does not 404.",
+  "expectedBugType": "network_error",
+  "successCondition": "No 404/500 responses observed during checkout submission.",
+  "riskLevel": "high",
+  "viewport": { "width": 390, "height": 844 },
+  "fixtures": {
+    "previewUrl": "http://localhost:3100",
+    "expectedFilesChanged": ["apps/demo-target/app/api/checkout/route.ts"]
+  }
+}

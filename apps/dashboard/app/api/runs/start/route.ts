@@ -8,6 +8,8 @@ import {
   emitRunStarted,
   ensureFlowPrConsumerGroups,
   recordProviderArtifact,
+  validateRunStartInput,
+  type ValidationIssue,
 } from '@flowpr/tools';
 
 export const runtime = 'nodejs';
@@ -16,22 +18,49 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function isInputError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
+function inputErrorResponse(error: unknown) {
+  const message = getErrorMessage(error);
+  const fieldMatch = /^(repoUrl|previewUrl|flowGoal|baseBranch|riskLevel)/.exec(message);
+  const field = (fieldMatch?.[1] ?? 'input') as ValidationIssue['field'] | 'input';
+  const fallbackCode = 'repoUrl.invalid' as ValidationIssue['code'];
+  const issue: ValidationIssue = {
+    code: fallbackCode,
+    field: field === 'input' ? 'repoUrl' : field,
+    message,
+    suggestion: 'Review the form fields and try again. All four fields — repository, preview URL, base branch, and flow goal — are required.',
+    severity: 'error',
+  };
 
-  return [
-    'Request body',
-    'repoUrl',
-    'previewUrl',
-    'flowGoal',
-    'baseBranch',
-    'riskLevel',
-  ].some((prefix) => error.message.startsWith(prefix));
+  return NextResponse.json({ error: message, issues: [issue] }, { status: 400 });
 }
 
 export async function POST(request: Request) {
+  let input;
+
   try {
-    const input = parseRunStartInput(await request.json());
+    input = parseRunStartInput(await request.json());
+  } catch (error) {
+    return inputErrorResponse(error);
+  }
+
+  const validation = await validateRunStartInput({
+    repoUrl: input.repoUrl,
+    previewUrl: input.previewUrl,
+    flowGoal: input.flowGoal,
+    baseBranch: input.baseBranch,
+  });
+
+  if (!validation.ok) {
+    return NextResponse.json(
+      {
+        error: 'FlowPR needs a few fixes before starting this run.',
+        issues: validation.issues,
+      },
+      { status: 400 },
+    );
+  }
+
+  try {
     const run = await createRun(input);
 
     await appendTimelineEvent({
@@ -44,6 +73,7 @@ export async function POST(request: Request) {
         repoUrl: run.repoUrl,
         previewUrl: run.previewUrl,
         flowGoal: run.flowGoal,
+        warnings: validation.issues.filter((issue) => issue.severity === 'warning').map((issue) => issue.message),
       },
     });
 
@@ -66,7 +96,9 @@ export async function POST(request: Request) {
       },
     });
 
-    const warnings: string[] = [];
+    const warnings = validation.issues
+      .filter((issue) => issue.severity === 'warning')
+      .map((issue) => issue.message);
     let streamId: string | undefined;
     const redis = createFlowPrRedisClient();
 
@@ -136,13 +168,11 @@ export async function POST(request: Request) {
         run,
         event: streamId ? { stream: 'flowpr:runs', streamId } : null,
         warnings,
+        issues: validation.issues,
       },
       { status: warnings.length > 0 ? 202 : 201 },
     );
   } catch (error) {
-    return NextResponse.json(
-      { error: getErrorMessage(error) },
-      { status: isInputError(error) ? 400 : 500 },
-    );
+    return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
   }
 }

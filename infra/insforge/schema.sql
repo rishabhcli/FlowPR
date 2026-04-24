@@ -118,6 +118,7 @@ create table if not exists qa_runs (
     )
   ),
   risk_level text not null check (risk_level in ('low', 'medium', 'high', 'critical')),
+  permission_profile text not null default 'draft-pr-only' check (permission_profile in ('investigation-only', 'draft-pr-only', 'verified-pr')),
   agent_name text not null,
   agent_version text not null,
   guild_trace_id text,
@@ -127,6 +128,26 @@ create table if not exists qa_runs (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+do $$
+begin
+  if to_regclass('public.qa_runs') is not null
+    and not exists (
+      select 1
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'qa_runs'
+        and column_name = 'permission_profile'
+    )
+  then
+    execute 'alter table public.qa_runs add column permission_profile text not null default ''draft-pr-only''';
+    begin
+      execute 'alter table public.qa_runs add constraint qa_runs_permission_profile_check check (permission_profile in (''investigation-only'', ''draft-pr-only'', ''verified-pr''))';
+    exception when duplicate_object then
+      null;
+    end;
+  end if;
+end $$;
 
 create index if not exists qa_runs_created_at_idx on qa_runs (created_at desc);
 create index if not exists qa_runs_status_idx on qa_runs (status);
