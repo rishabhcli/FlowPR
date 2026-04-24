@@ -12,10 +12,12 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "@flowpr/schemas": "workspace:*"
+    "@flowpr/schemas": "workspace:*",
+    "@insforge/sdk": "^1.2.5",
+    "@tiny-fish/sdk": "^0.0.8",
+    "redis": "^5.12.1"
   },
   "devDependencies": {
     "typescript": "^5.7.0"
   }
 }
-

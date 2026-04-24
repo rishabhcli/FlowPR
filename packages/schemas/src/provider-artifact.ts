@@ -22,3 +22,7 @@ export interface ProviderArtifactInput {
   raw?: Record<string, unknown>;
 }
 
+export interface ProviderArtifact extends ProviderArtifactInput {
+  id: string;
+  createdAt: string;
+}

@@ -12,8 +12,13 @@ export interface BrowserQaRequest {
 }
 
 export function createTinyFishClient() {
+  const configuredBaseUrl = process.env.TINYFISH_API_BASE_URL?.trim();
+  const baseURL =
+    configuredBaseUrl && configuredBaseUrl !== 'https://api.tinyfish.ai' ? configuredBaseUrl : undefined;
+
   return new TinyFish({
     apiKey: process.env.TINYFISH_API_KEY,
+    baseURL,
   });
 }
 
