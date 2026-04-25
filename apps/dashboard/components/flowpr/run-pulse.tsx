@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useMemo } from 'react';
 import {
+  ArrowLeft,
   ArrowUpRight,
   CircleCheck,
   Clock,
@@ -52,18 +53,33 @@ export function RunPulse({
 
   if (!detail) {
     return (
-      <Card className={cn('border-dashed bg-card/40', className)}>
-        <CardContent className="flex flex-col items-center justify-center gap-3 p-12 text-center">
-          <Radio className="h-8 w-8 text-muted-foreground" />
+      <Card
+        className={cn(
+          'relative overflow-hidden border-dashed bg-card/40',
+          className,
+        )}
+      >
+        <div className="pointer-events-none absolute inset-0 bg-radial-spot opacity-50" />
+        <CardContent className="relative flex flex-col items-center justify-center gap-4 p-14 text-center">
+          <div className="relative">
+            <span className="absolute inset-0 -z-10 animate-pulse-ring rounded-full" />
+            <div className="flex h-12 w-12 items-center justify-center rounded-full border border-primary/40 bg-primary/10 text-primary">
+              <Radio className="h-5 w-5" />
+            </div>
+          </div>
           <div>
             <p className="text-base font-medium text-foreground">
-              Start a run to see it here.
+              Waiting for a flow goal.
             </p>
             <p className="mt-1 max-w-md text-sm text-muted-foreground">
               FlowPR drives a real browser, explains failures, opens a PR, and
               reports back here.
             </p>
           </div>
+          <p className="mt-1 inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/5 px-3 py-1 text-[11px] font-medium uppercase tracking-widest text-primary">
+            <ArrowLeft className="h-3 w-3" />
+            Describe a journey to begin
+          </p>
         </CardContent>
       </Card>
     );

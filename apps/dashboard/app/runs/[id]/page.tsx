@@ -31,6 +31,7 @@ import { ResourceTiles } from '@/components/flowpr/resource-tiles';
 import { artifactSrc } from '@/lib/artifact-url';
 import { useRunStream } from '@/lib/use-run-stream';
 import { DiagnosisCard } from '@/components/flowpr/diagnosis-card';
+import { OutcomeHero } from '@/components/flowpr/outcome-hero';
 import { PatchCard } from '@/components/flowpr/patch-card';
 import { PrCard } from '@/components/flowpr/pr-card';
 import { Timeline } from '@/components/flowpr/timeline';
@@ -151,9 +152,61 @@ export default function RunDetailPage({
     return (
       <>
         <SiteHeader />
-        <main className="mx-auto flex min-h-[60vh] max-w-7xl items-center justify-center px-6">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" /> Loading run…
+        <main className="relative">
+          <div className="absolute inset-x-0 top-0 -z-10 h-[280px] bg-radial-spot opacity-60" />
+          <div className="mx-auto max-w-7xl px-6 py-8">
+            <div className="mb-4 h-7 w-36 rounded skeleton-shimmer" />
+            <div className="mb-3 h-3 w-24 rounded skeleton-shimmer" />
+            <div className="mb-3 h-9 w-3/4 rounded skeleton-shimmer" />
+            <div className="mb-6 h-3 w-1/2 rounded skeleton-shimmer" />
+
+            <Card className="mb-4">
+              <CardContent className="p-5">
+                <div className="h-16 rounded skeleton-shimmer" />
+              </CardContent>
+            </Card>
+
+            <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              {[0, 1, 2, 3].map((i) => (
+                <Card key={i}>
+                  <CardContent className="p-5">
+                    <div className="h-3 w-20 rounded skeleton-shimmer" />
+                    <div className="mt-3 h-7 w-24 rounded skeleton-shimmer" />
+                    <div className="mt-3 h-3 w-28 rounded skeleton-shimmer" />
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+
+            <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+              <Card>
+                <CardHeader>
+                  <div className="h-4 w-32 rounded skeleton-shimmer" />
+                </CardHeader>
+                <CardContent>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="aspect-video w-full rounded-md skeleton-shimmer" />
+                    <div className="aspect-video w-full rounded-md skeleton-shimmer" />
+                  </div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <div className="h-4 w-24 rounded skeleton-shimmer" />
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-2">
+                    {[0, 1, 2, 3, 4].map((i) => (
+                      <div key={i} className="h-3 w-full rounded skeleton-shimmer" />
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+            <p className="mt-6 inline-flex items-center gap-2 text-xs text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" /> Reading run timeline…
+            </p>
           </div>
         </main>
       </>
@@ -163,13 +216,33 @@ export default function RunDetailPage({
   const { run } = detail;
   const hasScreenshot = (obs: (typeof detail.browserObservations)[number]) =>
     Boolean(obs.screenshotKey || obs.screenshotUrl);
+  const observationsWithScreenshots = [...detail.browserObservations]
+    .filter(hasScreenshot)
+    .sort(
+      (a, b) =>
+        new Date(a.createdAt ?? 0).getTime() -
+        new Date(b.createdAt ?? 0).getTime(),
+    );
+  // Before = first failing observation that has a screenshot; otherwise the
+  // earliest observation we have any pixels for.
   const beforeObservation =
-    detail.browserObservations.find(
-      (obs) => (obs.status === 'failed' || obs.status === 'errored') && hasScreenshot(obs),
-    ) ?? detail.browserObservations.find((obs) => obs.status === 'failed' || obs.status === 'errored');
+    observationsWithScreenshots.find(
+      (obs) => obs.status === 'failed' || obs.status === 'errored',
+    ) ?? observationsWithScreenshots[0];
+  // After = passing observation if one exists; otherwise the most recent
+  // observation (post-patch state). Avoid duplicating the Before frame.
+  const passedObservation = observationsWithScreenshots.find(
+    (obs) => obs.status === 'passed',
+  );
+  const lastObservation =
+    observationsWithScreenshots[observationsWithScreenshots.length - 1];
   const afterObservation =
-    detail.browserObservations.find((obs) => obs.status === 'passed' && hasScreenshot(obs)) ??
-    detail.browserObservations.find((obs) => obs.status === 'passed');
+    passedObservation ??
+    (lastObservation && lastObservation !== beforeObservation
+      ? lastObservation
+      : undefined);
+  const afterIsPassed = Boolean(passedObservation);
+  const runFinished = run.status === 'done' || run.status === 'failed';
   const latestHypothesis = detail.bugHypotheses[detail.bugHypotheses.length - 1];
   const latestPatch = detail.patches[detail.patches.length - 1];
   const latestPR = detail.pullRequests[detail.pullRequests.length - 1];
@@ -261,6 +334,8 @@ export default function RunDetailPage({
               </div>
             </div>
 
+            <OutcomeHero detail={detail} />
+
             <Card>
               <CardContent className="p-5">
                 <PhaseStepper
@@ -298,6 +373,8 @@ export default function RunDetailPage({
                 </CardHeader>
                 <CardContent>
                   <BeforeAfter
+                    runFinished={runFinished}
+                    afterIsPassed={afterIsPassed}
                     before={(() => {
                       const src = beforeObservation
                         ? artifactSrc(run.id, {
@@ -319,7 +396,13 @@ export default function RunDetailPage({
                             url: afterObservation.screenshotUrl,
                           })
                         : undefined;
-                      return src ? { url: src, caption: 'Verified fix' } : null;
+                      if (!src) return null;
+                      return {
+                        url: src,
+                        caption: afterIsPassed
+                          ? 'Verified fix'
+                          : 'Post-patch state',
+                      };
                     })()}
                   />
                 </CardContent>

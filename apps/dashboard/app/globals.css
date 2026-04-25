@@ -51,6 +51,12 @@
     font-feature-settings: 'cv11', 'ss01', 'ss03';
   }
 
+  .font-display {
+    /* Geist alternates for a slightly more geometric headline cut. */
+    font-feature-settings: 'ss03', 'ss04', 'cv11';
+    letter-spacing: -0.018em;
+  }
+
   * {
     @apply border-border;
   }

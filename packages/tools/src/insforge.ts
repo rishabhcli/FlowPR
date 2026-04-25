@@ -468,34 +468,103 @@ export interface DownloadRunArtifactResult {
   cacheControl?: string;
 }
 
+function inferContentType(key: string, fallback: string): string {
+  if (fallback && fallback !== 'application/octet-stream' && fallback !== 'binary/octet-stream') {
+    return fallback;
+  }
+  const lower = key.toLowerCase();
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  if (lower.endsWith('.gif')) return 'image/gif';
+  if (lower.endsWith('.svg')) return 'image/svg+xml';
+  if (lower.endsWith('.json')) return 'application/json';
+  if (lower.endsWith('.zip')) return 'application/zip';
+  return fallback || 'application/octet-stream';
+}
+
+function extractStorageKey(keyOrUrl: string): string {
+  if (!/^https?:\/\//i.test(keyOrUrl)) return keyOrUrl;
+  // InsForge object URL: .../api/storage/buckets/<bucket>/objects/<encoded-key>[?...]
+  const match = keyOrUrl.match(
+    new RegExp(`/buckets/${artifactStorageBucket}/objects/([^?#]+)`),
+  );
+  if (match?.[1]) {
+    try {
+      return decodeURIComponent(match[1]);
+    } catch {
+      return match[1];
+    }
+  }
+  return keyOrUrl;
+}
+
 export async function downloadRunArtifact(
   keyOrUrl: string,
 ): Promise<DownloadRunArtifactResult> {
-  const { baseUrl, anonKey } = getInsForgeConfig();
-  const trimmedBase = baseUrl.replace(/\/+$/, '');
-  const url = /^https?:\/\//i.test(keyOrUrl)
-    ? keyOrUrl
-    : `${trimmedBase}/api/storage/buckets/${artifactStorageBucket}/objects/${encodeURIComponent(keyOrUrl)}`;
+  const key = extractStorageKey(keyOrUrl);
+  const isHttpInput = /^https?:\/\//i.test(keyOrUrl);
 
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${anonKey}`,
-      'x-api-key': anonKey,
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(
-      `downloadRunArtifact failed: ${response.status} ${response.statusText}`,
-    );
+  // 1) SDK path (handles direct/presigned strategy + auth) — works for both raw keys
+  // and full InsForge object URLs once the key is extracted.
+  if (key && !/^https?:\/\//i.test(key)) {
+    try {
+      const client = await getInsForgeClient();
+      const { data, error } = await client.storage
+        .from(artifactStorageBucket)
+        .download(key);
+      if (!error && data) {
+        const buffer = await data.arrayBuffer();
+        return {
+          bytes: new Uint8Array(buffer),
+          contentType: inferContentType(key, data.type || ''),
+          cacheControl: 'public, max-age=300, immutable',
+        };
+      }
+    } catch {
+      // fall through to HTTP fallback
+    }
   }
 
-  const buffer = await response.arrayBuffer();
-  return {
-    bytes: new Uint8Array(buffer),
-    contentType: response.headers.get('content-type') ?? 'application/octet-stream',
-    cacheControl: response.headers.get('cache-control') ?? undefined,
-  };
+  // 2) HTTP fallback — try the privileged API key first, then anon, then unauth.
+  const { baseUrl, anonKey } = getInsForgeConfig();
+  const trimmedBase = baseUrl.replace(/\/+$/, '');
+  const url = isHttpInput
+    ? keyOrUrl
+    : `${trimmedBase}/api/storage/buckets/${artifactStorageBucket}/objects/${encodeURIComponent(key)}`;
+
+  const apiKey = process.env.INSFORGE_API_KEY;
+  const headerSets: Array<Record<string, string>> = [];
+  if (apiKey) {
+    headerSets.push({ Authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey });
+  }
+  if (anonKey && anonKey !== apiKey) {
+    headerSets.push({ Authorization: `Bearer ${anonKey}`, 'x-api-key': anonKey });
+  }
+  headerSets.push({});
+
+  let lastStatus = 0;
+  let lastStatusText = '';
+  for (const headers of headerSets) {
+    const response = await fetch(url, { headers });
+    if (response.ok) {
+      const buffer = await response.arrayBuffer();
+      return {
+        bytes: new Uint8Array(buffer),
+        contentType: inferContentType(
+          key,
+          response.headers.get('content-type') ?? '',
+        ),
+        cacheControl: response.headers.get('cache-control') ?? undefined,
+      };
+    }
+    lastStatus = response.status;
+    lastStatusText = response.statusText;
+  }
+
+  throw new Error(
+    `downloadRunArtifact failed: ${lastStatus} ${lastStatusText}`,
+  );
 }
 
 export async function uploadRunArtifact(input: RunArtifactUploadInput): Promise<RunArtifactUploadResult> {

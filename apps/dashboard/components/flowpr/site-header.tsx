@@ -2,8 +2,8 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useEffect, useState } from 'react';
-import { Github, Sparkles } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Check, Github, Loader2, RotateCcw, Sparkles, X } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import { SystemStatusBar } from '@/components/flowpr/system-status-bar';
@@ -82,6 +82,7 @@ export function SiteHeader() {
 
         <div className="ml-auto flex items-center gap-2">
           <SystemStatusBar className="hidden sm:flex" />
+          <ResetDemoButton />
           <div
             className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border/60 bg-card/60 text-muted-foreground"
             title={profile?.login ?? 'GitHub'}
@@ -101,5 +102,89 @@ export function SiteHeader() {
         </div>
       </div>
     </header>
+  );
+}
+
+type ResetState = 'idle' | 'loading' | 'success' | 'error';
+
+function ResetDemoButton() {
+  const [state, setState] = useState<ResetState>('idle');
+  const [message, setMessage] = useState<string>();
+  const timeoutRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) window.clearTimeout(timeoutRef.current);
+    };
+  }, []);
+
+  async function handleClick() {
+    if (state === 'loading') return;
+    setState('loading');
+    setMessage(undefined);
+    try {
+      const response = await fetch('/api/demo/reset', { method: 'POST' });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error ?? `Reset failed (${response.status})`);
+      setState('success');
+      setMessage(body.message);
+    } catch (err) {
+      setState('error');
+      setMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (timeoutRef.current) window.clearTimeout(timeoutRef.current);
+      timeoutRef.current = window.setTimeout(() => {
+        setState('idle');
+        setMessage(undefined);
+      }, 2400);
+    }
+  }
+
+  const Icon =
+    state === 'loading'
+      ? Loader2
+      : state === 'success'
+        ? Check
+        : state === 'error'
+          ? X
+          : RotateCcw;
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={state === 'loading'}
+      title={
+        state === 'idle'
+          ? 'Re-arm storefront bug for the next run'
+          : (message ?? 'Reset demo')
+      }
+      aria-label="Reset demo"
+      className={cn(
+        'inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors',
+        state === 'success' &&
+          'border-success/40 bg-success/10 text-success',
+        state === 'error' &&
+          'border-destructive/40 bg-destructive/10 text-destructive',
+        (state === 'idle' || state === 'loading') &&
+          'border-border/60 bg-card/60 text-muted-foreground hover:border-primary/40 hover:text-foreground',
+      )}
+    >
+      <Icon
+        className={cn(
+          'h-3.5 w-3.5',
+          state === 'loading' && 'animate-spin',
+        )}
+      />
+      <span className="hidden md:inline">
+        {state === 'success'
+          ? 'Reset'
+          : state === 'error'
+            ? 'Failed'
+            : state === 'loading'
+              ? 'Resetting…'
+              : 'Reset demo'}
+      </span>
+    </button>
   );
 }

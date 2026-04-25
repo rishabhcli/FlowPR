@@ -63,11 +63,23 @@ async function LoginContent({
       )}
 
       <p className="mt-10 text-[11px] text-muted-foreground">
-        By continuing you let FlowPR connect a GitHub identity through InsForge.{' '}
-        <Link href="/health" className="text-foreground/80 underline-offset-4 hover:underline">
-          provider status
-        </Link>
+        By continuing you let FlowPR connect a GitHub identity through InsForge.
       </p>
+
+      <nav className="mt-3 flex items-center gap-3 text-[11px] text-muted-foreground">
+        <Link
+          href="/demo"
+          className="rounded-full border border-border/60 bg-card/40 px-3 py-1 font-medium text-foreground/80 transition hover:border-primary/40 hover:text-foreground"
+        >
+          Watch the demo
+        </Link>
+        <Link
+          href="/health"
+          className="rounded-full border border-border/60 bg-card/40 px-3 py-1 font-medium text-foreground/80 transition hover:border-primary/40 hover:text-foreground"
+        >
+          Provider status
+        </Link>
+      </nav>
     </section>
   );
 }

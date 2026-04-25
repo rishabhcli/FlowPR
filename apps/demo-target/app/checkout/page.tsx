@@ -1,5 +1,7 @@
 import Link from 'next/link';
 
+export const metadata = { title: 'Checkout' };
+
 export default async function CheckoutPage({
   searchParams,
 }: {
@@ -11,10 +13,11 @@ export default async function CheckoutPage({
     <main className="demo-shell checkout">
       <p className="eyebrow">Checkout</p>
       <h1>{plan === 'pro' ? 'Pro plan' : 'Basic plan'}</h1>
-      <p>Complete checkout on mobile. The bug: this fixed banner covers the CTA.</p>
+      <p>Review your order and confirm payment to finish setup.</p>
       <div className="payment-box">
         <span>Card ending 4242</span>
-        <span>Total due today: {plan === 'pro' ? '$49' : '$19'}</span>
+        <span>Total due today: {plan === 'pro' ? '$49.00' : '$19.00'}</span>
+        <span className="payment-note">Renews monthly · cancel anytime</span>
       </div>
       <Link className="pay-button" href="/success">
         Pay now
