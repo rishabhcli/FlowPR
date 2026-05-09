@@ -1,0 +1,40 @@
+{
+  "repo": "FlowPR",
+  "generatedAt": "2026-05-09T19:44:58.566815+00:00",
+  "eligibleMarkdown": [
+    "README.md",
+    "docs/demo-runbook.md",
+    "docs/phase3-redis-runbook.md",
+    "docs/phase4-tinyfish-browser-qa-runbook.md",
+    "nontechnical.md",
+    "skills/flowpr-autonomous-frontend-qa/references/benchmark-suite.md",
+    "skills/flowpr-autonomous-frontend-qa/references/demo-runbook.md",
+    "skills/flowpr-autonomous-frontend-qa/references/guild-agent.md",
+    "skills/flowpr-autonomous-frontend-qa/references/pr-template.md",
+    "skills/flowpr-autonomous-frontend-qa/references/sponsor-map.md",
+    "skills/flowpr-autonomous-frontend-qa/references/state-machine.md",
+    "technical.md",
+    "writeup.md"
+  ],
+  "protectedMarkdown": [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "GEMINI.md",
+    "skills/flowpr-autonomous-frontend-qa/SKILL.md"
+  ],
+  "htmlPages": [
+    "docs-html/pages/README.html",
+    "docs-html/pages/docs/demo-runbook.html",
+    "docs-html/pages/docs/phase3-redis-runbook.html",
+    "docs-html/pages/docs/phase4-tinyfish-browser-qa-runbook.html",
+    "docs-html/pages/nontechnical.html",
+    "docs-html/pages/skills/flowpr-autonomous-frontend-qa/references/benchmark-suite.html",
+    "docs-html/pages/skills/flowpr-autonomous-frontend-qa/references/demo-runbook.html",
+    "docs-html/pages/skills/flowpr-autonomous-frontend-qa/references/guild-agent.html",
+    "docs-html/pages/skills/flowpr-autonomous-frontend-qa/references/pr-template.html",
+    "docs-html/pages/skills/flowpr-autonomous-frontend-qa/references/sponsor-map.html",
+    "docs-html/pages/skills/flowpr-autonomous-frontend-qa/references/state-machine.html",
+    "docs-html/pages/technical.html",
+    "docs-html/pages/writeup.html"
+  ]
+}
