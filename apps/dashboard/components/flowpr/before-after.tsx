@@ -1,13 +1,18 @@
 'use client';
 
 import { useState } from 'react';
-import { ArrowRight, CircleCheck, CircleDashed, CircleX, Camera } from 'lucide-react';
+import { ArrowRight, Camera, CircleCheck, CircleDashed, CircleX, TerminalSquare } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 
 interface BeforeAfterProps {
   before?: { url: string; caption?: string } | null;
   after?: { url: string; caption?: string } | null;
+  afterProof?: { summary: string; details?: string[] } | null;
+  beforeLabel?: string;
+  afterLabel?: string;
+  beforeBadge?: string;
+  afterBadge?: string;
   runFinished?: boolean;
   afterIsPassed?: boolean;
   className?: string;
@@ -18,6 +23,11 @@ interface BeforeAfterProps {
 export function BeforeAfter({
   before,
   after,
+  afterProof,
+  beforeLabel = 'Before',
+  afterLabel,
+  beforeBadge,
+  afterBadge,
   runFinished = false,
   afterIsPassed = false,
   className,
@@ -26,16 +36,19 @@ export function BeforeAfter({
     <div className={cn('grid gap-4 md:grid-cols-2', className)}>
       <Panel
         kind="before"
-        label="Before"
+        label={beforeLabel}
         caption={before?.caption ?? 'Seeded bug reproduction'}
+        badge={beforeBadge}
         url={before?.url}
         emptyState={runFinished ? 'no_failure_capture' : 'awaiting_failure'}
       />
       <Panel
         kind="after"
-        label={afterIsPassed ? 'After · verified' : 'After'}
-        caption={after?.caption ?? (afterIsPassed ? 'Verified fix' : 'Post-patch state')}
+        label={afterLabel ?? (afterIsPassed || afterProof ? 'After · verified' : 'After')}
+        caption={after?.caption ?? (afterProof ? 'Local verification proof' : afterIsPassed ? 'Verified fix' : 'Post-patch state')}
+        badge={afterBadge}
         url={after?.url}
+        proof={afterProof}
         emptyState={
           runFinished ? 'no_verified_capture' : 'awaiting_verification'
         }
@@ -61,13 +74,17 @@ function Panel({
   kind,
   label,
   caption,
+  badge,
   url,
+  proof,
   emptyState,
 }: {
   kind: 'before' | 'after';
   label: string;
   caption: string;
+  badge?: string;
   url?: string;
+  proof?: { summary: string; details?: string[] } | null;
   emptyState: EmptyState;
 }) {
   const [loaded, setLoaded] = useState(false);
@@ -82,6 +99,7 @@ function Panel({
       : ('no_verified_capture' as EmptyState)
     : emptyState;
   const showImage = Boolean(url) && !errored;
+  const showProof = !showImage && kind === 'after' && Boolean(proof);
 
   return (
     <figure
@@ -94,7 +112,7 @@ function Panel({
         <div className="flex items-center gap-2">
           {kind === 'before' ? (
             <CircleX className="h-3.5 w-3.5 text-destructive" />
-          ) : showImage ? (
+          ) : showImage || showProof ? (
             <CircleCheck className="h-3.5 w-3.5 text-success" />
           ) : (
             <CircleDashed className="h-3.5 w-3.5 text-muted-foreground" />
@@ -104,7 +122,7 @@ function Panel({
               'text-[11px] font-semibold uppercase tracking-widest',
               kind === 'before'
                 ? 'text-destructive'
-                : showImage
+                : showImage || showProof
                   ? 'text-success'
                   : 'text-muted-foreground',
             )}
@@ -149,7 +167,34 @@ function Panel({
                 : 'bg-success/20 text-success',
             )}
           >
-            {kind === 'before' ? 'bug captured' : 'after patch'}
+            {badge ?? (kind === 'before' ? 'bug captured' : 'after patch')}
+          </span>
+        </div>
+      ) : showProof && proof ? (
+        <div className="flex aspect-[9/16] max-h-[460px] flex-col justify-center gap-4 bg-success/5 p-6 text-sm md:aspect-[390/600]">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full border border-success/35 bg-success/10 text-success">
+            <TerminalSquare className="h-5 w-5" />
+          </div>
+          <div className="text-center">
+            <p className="font-medium text-foreground">{proof.summary}</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              No passing browser screenshot was captured for this localhost run; local verification is the proof source.
+            </p>
+          </div>
+          {proof.details?.length ? (
+            <div className="mx-auto grid w-full max-w-xs gap-2">
+              {proof.details.slice(0, 4).map((detail) => (
+                <span
+                  key={detail}
+                  className="rounded border border-success/25 bg-card/70 px-2 py-1 font-mono text-[11px] text-success"
+                >
+                  {detail}
+                </span>
+              ))}
+            </div>
+          ) : null}
+          <span className="mx-auto inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-success">
+            {badge ?? 'local proof'}
           </span>
         </div>
       ) : (

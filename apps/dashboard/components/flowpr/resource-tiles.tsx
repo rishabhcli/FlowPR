@@ -27,6 +27,11 @@ export function ResourceTiles({ detail, className }: ResourceTilesProps) {
   const tinyfishRuns = browserObservations.filter((o) => o.provider === 'tinyfish').length;
   const screenshots = browserObservations.filter((o) => o.screenshotKey || o.screenshotUrl).length;
   const artifactCount = providerArtifacts.length;
+  const usingLocalFallback = providerArtifacts.some(
+    (artifact) =>
+      artifact.sponsor === 'insforge' &&
+      artifact.artifactType === 'local_fallback_store',
+  );
 
   return (
     <div className={cn('grid gap-3 sm:grid-cols-2 lg:grid-cols-4', className)}>
@@ -49,14 +54,14 @@ export function ResourceTiles({ detail, className }: ResourceTilesProps) {
         value={screenshots}
         tone="info"
         icon={<Camera className="h-4 w-4" />}
-        caption="stored in InsForge"
+        caption={usingLocalFallback ? 'stored locally' : 'stored in InsForge'}
       />
       <MetricTile
         label="Artifacts recorded"
         value={artifactCount}
         tone="info"
         icon={<GitBranch className="h-4 w-4" />}
-        caption="across all providers"
+        caption={usingLocalFallback ? 'local fallback plus providers' : 'across all providers'}
       />
     </div>
   );

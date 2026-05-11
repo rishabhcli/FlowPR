@@ -1,10 +1,15 @@
 import { defineConfig, devices } from '@playwright/test';
 
+const runLabel = process.env.PLAYWRIGHT_RUN_LABEL ?? 'run';
+const targetPort = process.env.DEMO_TARGET_PORT ?? '3100';
+const targetUrl = process.env.DEMO_TARGET_URL ?? `http://localhost:${targetPort}`;
+
 export default defineConfig({
   testDir: './tests',
+  outputDir: process.env.PLAYWRIGHT_OUTPUT_DIR ?? `./test-results/${runLabel}-${process.pid}`,
   timeout: 30_000,
   use: {
-    baseURL: process.env.DEMO_TARGET_URL ?? 'http://localhost:3100',
+    baseURL: targetUrl,
     trace: 'on',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
@@ -21,8 +26,8 @@ export default defineConfig({
   webServer: process.env.DEMO_TARGET_URL
     ? undefined
     : {
-        command: 'pnpm dev',
-        url: 'http://localhost:3100',
+        command: `pnpm exec next dev --port ${targetPort}`,
+        url: targetUrl,
         reuseExistingServer: true,
         timeout: 120_000,
       },

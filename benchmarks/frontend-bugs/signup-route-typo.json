@@ -5,6 +5,27 @@
   "successCondition": "Signup form submission reaches /success.",
   "riskLevel": "high",
   "viewport": { "width": 390, "height": 844 },
+  "expectedEvidence": {
+    "providers": ["tinyfish", "playwright"],
+    "artifacts": ["navigation error screenshot", "route status trace", "playwright trace"],
+    "signals": [
+      "Signup submit does not land on /success before the patch",
+      "Signup submit reaches /success after the patch"
+    ]
+  },
+  "expectedDiagnosis": {
+    "bugType": "client_navigation_failure",
+    "severity": "high",
+    "likelyFiles": ["apps/demo-target/app/signup/page.tsx"]
+  },
+  "expectedPatch": {
+    "filesChanged": ["apps/demo-target/app/signup/page.tsx"]
+  },
+  "verification": {
+    "command": "pnpm benchmark:fixtures",
+    "testName": "signup-route-typo: signup submission reaches success",
+    "successCondition": "Signup submission reaches /success without client navigation errors."
+  },
   "fixtures": {
     "previewUrl": "http://localhost:3100/signup",
     "expectedFilesChanged": ["apps/demo-target/app/signup/page.tsx"]

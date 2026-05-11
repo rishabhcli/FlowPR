@@ -28,7 +28,26 @@ export interface ObservabilitySummary {
   };
   deadLetter: {
     count: number;
+    total?: number;
+    resolved?: number;
+    orphaned?: number;
     mostRecentRunId?: string;
+  };
+  recovery?: {
+    stuckCount: number;
+    stuckRuns: Array<{
+      id: string;
+      status: string;
+      flowGoal: string;
+      updatedAt: string;
+      ageMs: number;
+      reason: string;
+      nextAction: string;
+      workerId?: string;
+      workerPhase?: string;
+    }>;
+    oldestStuckRunId?: string;
+    actionSummary?: string;
   };
   redisError?: string;
 }

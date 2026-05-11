@@ -11,6 +11,7 @@ test-results/
 .turbo/
 .flowpr-workspaces/
 chainguard-node-sbom.json
+*.tsbuildinfo
 
 # Local screenshots and MCP browser session artifacts
 .playwright-mcp/

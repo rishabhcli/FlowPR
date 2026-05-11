@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
-import { getGitHubConnectionForUser } from '@flowpr/tools';
+import { getGitHubConnectionForUser } from '@flowpr/tools/github-connections';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';

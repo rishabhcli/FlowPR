@@ -5,6 +5,27 @@
   "successCondition": "Checkout page shows the Pro plan total and reaches /success.",
   "riskLevel": "medium",
   "viewport": { "width": 390, "height": 844 },
+  "expectedEvidence": {
+    "providers": ["tinyfish", "playwright"],
+    "artifacts": ["pricing click trace", "checkout URL capture", "mobile screenshot"],
+    "signals": [
+      "Selecting Pro sends a non-pro plan query before the patch",
+      "Checkout URL contains plan=pro and the Pro total after the patch"
+    ]
+  },
+  "expectedDiagnosis": {
+    "bugType": "client_navigation_failure",
+    "severity": "medium",
+    "likelyFiles": ["apps/demo-target/app/page.tsx"]
+  },
+  "expectedPatch": {
+    "filesChanged": ["apps/demo-target/app/page.tsx"]
+  },
+  "verification": {
+    "command": "pnpm benchmark:fixtures",
+    "testName": "wrong-plan-param: selecting Pro passes plan=pro into checkout",
+    "successCondition": "Selecting Pro opens checkout with plan=pro and completes to /success."
+  },
   "fixtures": {
     "previewUrl": "http://localhost:3100",
     "expectedFilesChanged": ["apps/demo-target/app/page.tsx"]

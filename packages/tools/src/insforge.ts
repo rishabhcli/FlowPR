@@ -36,6 +36,42 @@ import type {
 } from '@flowpr/schemas';
 import { artifactStorageBucket, parseGitHubRepoUrl } from '@flowpr/schemas';
 import { loadLocalEnv } from './env';
+import {
+  localAppendTimelineEvent,
+  localArtifactKeyFromUrl,
+  localCreateRun,
+  localDownloadRunArtifact,
+  localGetRun,
+  localGetRunDetail,
+  localListActionGates,
+  localListAgentMemories,
+  localListAgentSessions,
+  localListBenchmarkEvaluations,
+  localListBrowserObservations,
+  localListBugHypotheses,
+  localListPatches,
+  localListPolicyHits,
+  localListProviderArtifacts,
+  localListPullRequests,
+  localListRecentRuns,
+  localListTimelineEvents,
+  localListVerificationResults,
+  localRecordActionGate,
+  localRecordAgentMemory,
+  localRecordAgentSession,
+  localRecordBenchmarkEvaluation,
+  localRecordBrowserObservation,
+  localRecordBugHypothesis,
+  localRecordPatch,
+  localRecordPolicyHit,
+  localRecordProviderArtifact,
+  localRecordPullRequest,
+  localRecordVerificationResult,
+  localUpdateAgentSessionsForRun,
+  localUpdatePullRequest,
+  localUpdateRunStatus,
+  localUploadRunArtifact,
+} from './local-store';
 
 interface InsForgeProjectConfig {
   oss_host?: string;
@@ -406,6 +442,32 @@ export interface RunArtifactUploadResult {
 }
 
 let cachedClient: InsForgeClient | undefined;
+let insForgeFallbackReason: string | undefined;
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function preferLocalStore(): boolean {
+  loadLocalEnv();
+  return process.env.FLOWPR_DATA_MODE === 'local' || Boolean(insForgeFallbackReason);
+}
+
+async function withInsForgeFallback<T>(
+  remote: () => Promise<T>,
+  local: (error?: unknown) => Promise<T>,
+): Promise<T> {
+  if (preferLocalStore()) {
+    return local(insForgeFallbackReason);
+  }
+
+  try {
+    return await remote();
+  } catch (error) {
+    insForgeFallbackReason = getErrorMessage(error);
+    return local(error);
+  }
+}
 
 function readProjectConfig(): InsForgeProjectConfig {
   let dir = process.cwd();
@@ -479,11 +541,13 @@ function inferContentType(key: string, fallback: string): string {
   if (lower.endsWith('.gif')) return 'image/gif';
   if (lower.endsWith('.svg')) return 'image/svg+xml';
   if (lower.endsWith('.json')) return 'application/json';
+  if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'text/markdown; charset=utf-8';
   if (lower.endsWith('.zip')) return 'application/zip';
   return fallback || 'application/octet-stream';
 }
 
 function extractStorageKey(keyOrUrl: string): string {
+  keyOrUrl = localArtifactKeyFromUrl(keyOrUrl);
   if (!/^https?:\/\//i.test(keyOrUrl)) return keyOrUrl;
   // InsForge object URL: .../api/storage/buckets/<bucket>/objects/<encoded-key>[?...]
   const match = keyOrUrl.match(
@@ -504,6 +568,14 @@ export async function downloadRunArtifact(
 ): Promise<DownloadRunArtifactResult> {
   const key = extractStorageKey(keyOrUrl);
   const isHttpInput = /^https?:\/\//i.test(keyOrUrl);
+
+  if (preferLocalStore() && !isHttpInput) {
+    try {
+      return await localDownloadRunArtifact(key);
+    } catch {
+      // Fall through to the SDK/HTTP paths; the artifact may genuinely live in InsForge.
+    }
+  }
 
   // 1) SDK path (handles direct/presigned strategy + auth) — works for both raw keys
   // and full InsForge object URLs once the key is extracted.
@@ -527,7 +599,13 @@ export async function downloadRunArtifact(
   }
 
   // 2) HTTP fallback — try the privileged API key first, then anon, then unauth.
-  const { baseUrl, anonKey } = getInsForgeConfig();
+  let config: ReturnType<typeof getInsForgeConfig>;
+  try {
+    config = getInsForgeConfig();
+  } catch {
+    return localDownloadRunArtifact(keyOrUrl);
+  }
+  const { baseUrl, anonKey } = config;
   const trimmedBase = baseUrl.replace(/\/+$/, '');
   const url = isHttpInput
     ? keyOrUrl
@@ -562,30 +640,39 @@ export async function downloadRunArtifact(
     lastStatusText = response.statusText;
   }
 
-  throw new Error(
-    `downloadRunArtifact failed: ${lastStatus} ${lastStatusText}`,
-  );
+  try {
+    return await localDownloadRunArtifact(keyOrUrl);
+  } catch {
+    throw new Error(
+      `downloadRunArtifact failed: ${lastStatus} ${lastStatusText}`,
+    );
+  }
 }
 
 export async function uploadRunArtifact(input: RunArtifactUploadInput): Promise<RunArtifactUploadResult> {
-  const client = await getInsForgeClient();
-  let blobPart: BlobPart;
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      let blobPart: BlobPart;
 
-  if (input.body instanceof Uint8Array) {
-    const copy = new Uint8Array(input.body.byteLength);
-    copy.set(input.body);
-    blobPart = copy.buffer as ArrayBuffer;
-  } else {
-    blobPart = input.body;
-  }
+      if (input.body instanceof Uint8Array) {
+        const copy = new Uint8Array(input.body.byteLength);
+        copy.set(input.body);
+        blobPart = copy.buffer as ArrayBuffer;
+      } else {
+        blobPart = input.body;
+      }
 
-  const blob = input.body instanceof Blob
-    ? input.body
-    : new Blob([blobPart], { type: input.contentType ?? 'application/octet-stream' });
-  const { data, error } = await client.storage.from(artifactStorageBucket).upload(input.key, blob);
-  throwIfError(error, 'uploadRunArtifact');
+      const blob = input.body instanceof Blob
+        ? input.body
+        : new Blob([blobPart], { type: input.contentType ?? 'application/octet-stream' });
+      const { data, error } = await client.storage.from(artifactStorageBucket).upload(input.key, blob);
+      throwIfError(error, 'uploadRunArtifact');
 
-  return data as RunArtifactUploadResult;
+      return data as RunArtifactUploadResult;
+    },
+    () => localUploadRunArtifact(input),
+  );
 }
 
 function firstRow<T>(data: unknown, operation: string): T {
@@ -929,99 +1016,114 @@ async function recordFlowSpec(client: InsForgeClient, run: FlowPrRun): Promise<v
 }
 
 export async function createRun(input: RunStartInput): Promise<FlowPrRun> {
-  const client = await getInsForgeClient();
-  const now = new Date().toISOString();
-  const repoRef = parseGitHubRepoUrl(input.repoUrl);
-  const project = await ensureProject(client, input);
-  const row = {
-    id: randomUUID(),
-    project_id: project.id,
-    repo_url: input.repoUrl,
-    owner: repoRef.owner,
-    repo: repoRef.repo,
-    base_branch: input.baseBranch,
-    preview_url: input.previewUrl,
-    flow_goal: input.flowGoal,
-    status: 'queued' satisfies RunStatus,
-    risk_level: input.riskLevel,
-    permission_profile: input.permissionProfile,
-    agent_name: process.env.FLOWPR_AGENT_NAME ?? 'flowpr-autonomous-frontend-qa',
-    agent_version: process.env.FLOWPR_AGENT_VERSION ?? '0.1.0',
-    started_at: now,
-    created_at: now,
-    updated_at: now,
-  };
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const now = new Date().toISOString();
+      const repoRef = parseGitHubRepoUrl(input.repoUrl);
+      const project = await ensureProject(client, input);
+      const row = {
+        id: randomUUID(),
+        project_id: project.id,
+        repo_url: input.repoUrl,
+        owner: repoRef.owner,
+        repo: repoRef.repo,
+        base_branch: input.baseBranch,
+        preview_url: input.previewUrl,
+        flow_goal: input.flowGoal,
+        status: 'queued' satisfies RunStatus,
+        risk_level: input.riskLevel,
+        permission_profile: input.permissionProfile,
+        agent_name: process.env.FLOWPR_AGENT_NAME ?? 'flowpr-autonomous-frontend-qa',
+        agent_version: process.env.FLOWPR_AGENT_VERSION ?? '0.1.0',
+        started_at: now,
+        created_at: now,
+        updated_at: now,
+      };
 
-  const { data, error } = await client.database.from('qa_runs').insert([row]).select('*');
-  throwIfError(error, 'createRun');
+      const { data, error } = await client.database.from('qa_runs').insert([row]).select('*');
+      throwIfError(error, 'createRun');
 
-  const run = mapRun(firstRow<RunRow>(data, 'createRun'));
-  await recordFlowSpec(client, run);
+      const run = mapRun(firstRow<RunRow>(data, 'createRun'));
+      await recordFlowSpec(client, run);
 
-  const session = await recordAgentSession({
-    runId: run.id,
-    sponsor: 'guildai',
-    status: 'created',
-    goal: run.flowGoal,
-    metadata: {
-      agentName: run.agentName,
-      agentVersion: run.agentVersion,
-      projectId: run.projectId,
-      mode: 'phase2_system_of_record',
+      const session = await recordAgentSession({
+        runId: run.id,
+        sponsor: 'guildai',
+        status: 'created',
+        goal: run.flowGoal,
+        metadata: {
+          agentName: run.agentName,
+          agentVersion: run.agentVersion,
+          projectId: run.projectId,
+          mode: 'phase2_system_of_record',
+        },
+        startedAt: now,
+      });
+
+      await recordActionGate({
+        runId: run.id,
+        sessionId: session.id,
+        gateType: 'autonomous_browser_qa',
+        riskLevel: run.riskLevel,
+        status: 'allowed',
+        reason: 'Dashboard run creation permits browser QA and evidence collection for this run.',
+        requestedBy: 'dashboard',
+        resolvedBy: 'system',
+        resolvedAt: now,
+        metadata: {
+          repoUrl: run.repoUrl,
+          previewUrl: run.previewUrl,
+        },
+      });
+
+      await recordAgentMemory({
+        projectId: run.projectId,
+        runId: run.id,
+        scope: 'project',
+        key: 'latest_flow_goal',
+        value: {
+          flowGoal: run.flowGoal,
+          previewUrl: run.previewUrl,
+          riskLevel: run.riskLevel,
+        },
+        confidence: 1,
+      });
+
+      return run;
     },
-    startedAt: now,
-  });
-
-  await recordActionGate({
-    runId: run.id,
-    sessionId: session.id,
-    gateType: 'autonomous_browser_qa',
-    riskLevel: run.riskLevel,
-    status: 'allowed',
-    reason: 'Dashboard run creation permits browser QA and evidence collection for this run.',
-    requestedBy: 'dashboard',
-    resolvedBy: 'system',
-    resolvedAt: now,
-    metadata: {
-      repoUrl: run.repoUrl,
-      previewUrl: run.previewUrl,
-    },
-  });
-
-  await recordAgentMemory({
-    projectId: run.projectId,
-    runId: run.id,
-    scope: 'project',
-    key: 'latest_flow_goal',
-    value: {
-      flowGoal: run.flowGoal,
-      previewUrl: run.previewUrl,
-      riskLevel: run.riskLevel,
-    },
-    confidence: 1,
-  });
-
-  return run;
+    (error) => localCreateRun(input, error ? getErrorMessage(error) : undefined),
+  );
 }
 
 export async function getRun(runId: string): Promise<FlowPrRun | null> {
-  const client = await getInsForgeClient();
-  const { data, error } = await client.database.from('qa_runs').select('*').eq('id', runId).maybeSingle();
-  throwIfError(error, 'getRun');
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database.from('qa_runs').select('*').eq('id', runId).maybeSingle();
+      throwIfError(error, 'getRun');
 
-  return data ? mapRun(data as RunRow) : null;
+      return data ? mapRun(data as RunRow) : null;
+    },
+    () => localGetRun(runId),
+  );
 }
 
 export async function listRecentRuns(limit = 12): Promise<FlowPrRun[]> {
-  const client = await getInsForgeClient();
-  const { data, error } = await client.database
-    .from('qa_runs')
-    .select('*')
-    .order('created_at', { ascending: false })
-    .limit(limit);
-  throwIfError(error, 'listRecentRuns');
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('qa_runs')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(limit);
+      throwIfError(error, 'listRecentRuns');
 
-  return Array.isArray(data) ? data.map((row) => mapRun(row as RunRow)) : [];
+      return Array.isArray(data) ? data.map((row) => mapRun(row as RunRow)) : [];
+    },
+    () => localListRecentRuns(limit),
+  );
 }
 
 export async function updateRunStatus(
@@ -1029,283 +1131,358 @@ export async function updateRunStatus(
   status: RunStatus,
   options: { failureSummary?: string } = {},
 ): Promise<FlowPrRun> {
-  const update: JsonRecord = {
-    status,
-    updated_at: new Date().toISOString(),
-  };
+  return withInsForgeFallback(
+    async () => {
+      const update: JsonRecord = {
+        status,
+        updated_at: new Date().toISOString(),
+      };
 
-  if (status === 'done' || status === 'failed') {
-    update.completed_at = new Date().toISOString();
-  }
+      if (status === 'done' || status === 'failed') {
+        update.completed_at = new Date().toISOString();
+      }
 
-  if (options.failureSummary) {
-    update.failure_summary = options.failureSummary;
-  }
+      if (options.failureSummary) {
+        update.failure_summary = options.failureSummary;
+      }
 
-  const client = await getInsForgeClient();
-  const { data, error } = await client.database.from('qa_runs').update(update).eq('id', runId).select('*');
-  throwIfError(error, 'updateRunStatus');
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database.from('qa_runs').update(update).eq('id', runId).select('*');
+      throwIfError(error, 'updateRunStatus');
 
-  return mapRun(firstRow<RunRow>(data, 'updateRunStatus'));
+      return mapRun(firstRow<RunRow>(data, 'updateRunStatus'));
+    },
+    () => localUpdateRunStatus(runId, status, options),
+  );
 }
 
 export async function appendTimelineEvent(input: TimelineEventInput): Promise<TimelineEvent> {
-  const client = await getInsForgeClient();
-  const row = {
-    id: randomUUID(),
-    run_id: input.runId,
-    sequence: 0,
-    actor: input.actor,
-    phase: input.phase,
-    status: input.status,
-    title: input.title,
-    detail: input.detail,
-    data: input.data ?? {},
-    created_at: new Date().toISOString(),
-  };
-  const { data, error } = await client.database.from('timeline_events').insert([row]).select('*');
-  throwIfError(error, 'appendTimelineEvent');
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const row = {
+        id: randomUUID(),
+        run_id: input.runId,
+        sequence: 0,
+        actor: input.actor,
+        phase: input.phase,
+        status: input.status,
+        title: input.title,
+        detail: input.detail,
+        data: input.data ?? {},
+        created_at: new Date().toISOString(),
+      };
+      const { data, error } = await client.database.from('timeline_events').insert([row]).select('*');
+      throwIfError(error, 'appendTimelineEvent');
 
-  return mapTimelineEvent(firstRow<TimelineEventRow>(data, 'appendTimelineEvent'));
+      return mapTimelineEvent(firstRow<TimelineEventRow>(data, 'appendTimelineEvent'));
+    },
+    () => localAppendTimelineEvent(input),
+  );
 }
 
 export async function listTimelineEvents(runId: string): Promise<TimelineEvent[]> {
-  const client = await getInsForgeClient();
-  const { data, error } = await client.database
-    .from('timeline_events')
-    .select('*')
-    .eq('run_id', runId)
-    .order('sequence', { ascending: true });
-  throwIfError(error, 'listTimelineEvents');
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('timeline_events')
+        .select('*')
+        .eq('run_id', runId)
+        .order('sequence', { ascending: true });
+      throwIfError(error, 'listTimelineEvents');
 
-  return Array.isArray(data) ? data.map((row) => mapTimelineEvent(row as TimelineEventRow)) : [];
+      return Array.isArray(data) ? data.map((row) => mapTimelineEvent(row as TimelineEventRow)) : [];
+    },
+    () => localListTimelineEvents(runId),
+  );
 }
 
 export async function recordProviderArtifact(input: ProviderArtifactInput): Promise<ProviderArtifact> {
-  const client = await getInsForgeClient();
-  const row = {
-    id: randomUUID(),
-    run_id: input.runId,
-    sponsor: input.sponsor,
-    artifact_type: input.artifactType,
-    provider_id: input.providerId,
-    artifact_url: input.artifactUrl,
-    storage_bucket: input.storageBucket ?? (input.storageKey ? artifactStorageBucket : undefined),
-    storage_key: input.storageKey,
-    request_summary: input.requestSummary,
-    response_summary: input.responseSummary,
-    raw: input.raw,
-    created_at: new Date().toISOString(),
-  };
-  const { data, error } = await client.database.from('provider_artifacts').insert([row]).select('*');
-  throwIfError(error, 'recordProviderArtifact');
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const row = {
+        id: randomUUID(),
+        run_id: input.runId,
+        sponsor: input.sponsor,
+        artifact_type: input.artifactType,
+        provider_id: input.providerId,
+        artifact_url: input.artifactUrl,
+        storage_bucket: input.storageBucket ?? (input.storageKey ? artifactStorageBucket : undefined),
+        storage_key: input.storageKey,
+        request_summary: input.requestSummary,
+        response_summary: input.responseSummary,
+        raw: input.raw,
+        created_at: new Date().toISOString(),
+      };
+      const { data, error } = await client.database.from('provider_artifacts').insert([row]).select('*');
+      throwIfError(error, 'recordProviderArtifact');
 
-  return mapProviderArtifact(firstRow<ProviderArtifactRow>(data, 'recordProviderArtifact'));
+      return mapProviderArtifact(firstRow<ProviderArtifactRow>(data, 'recordProviderArtifact'));
+    },
+    () => localRecordProviderArtifact(input),
+  );
 }
 
 export async function listProviderArtifacts(runId: string): Promise<ProviderArtifact[]> {
-  const client = await getInsForgeClient();
-  const { data, error } = await client.database
-    .from('provider_artifacts')
-    .select('*')
-    .eq('run_id', runId)
-    .order('created_at', { ascending: true });
-  throwIfError(error, 'listProviderArtifacts');
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('provider_artifacts')
+        .select('*')
+        .eq('run_id', runId)
+        .order('created_at', { ascending: true });
+      throwIfError(error, 'listProviderArtifacts');
 
-  return Array.isArray(data) ? data.map((row) => mapProviderArtifact(row as ProviderArtifactRow)) : [];
+      return Array.isArray(data) ? data.map((row) => mapProviderArtifact(row as ProviderArtifactRow)) : [];
+    },
+    () => localListProviderArtifacts(runId),
+  );
 }
 
 export async function recordBrowserObservation(input: BrowserObservationInput): Promise<BrowserObservation> {
-  const client = await getInsForgeClient();
-  const row = {
-    id: randomUUID(),
-    run_id: input.runId,
-    provider: input.provider,
-    provider_run_id: input.providerRunId ?? input.providerId,
-    status: input.status,
-    severity: input.severity,
-    failed_step: input.failedStep,
-    expected_behavior: input.expectedBehavior,
-    observed_behavior: input.observedBehavior,
-    viewport: input.viewport ?? {},
-    screenshot_url: input.screenshotUrl,
-    screenshot_key: input.screenshotKey,
-    trace_url: input.traceUrl,
-    trace_key: input.traceKey,
-    dom_summary: input.domSummary,
-    console_errors: input.consoleErrors ?? [],
-    network_errors: input.networkErrors ?? [],
-    result: input.result ?? {},
-    raw: input.raw,
-    created_at: new Date().toISOString(),
-  };
-  const { data, error } = await client.database.from('browser_observations').insert([row]).select('*');
-  throwIfError(error, 'recordBrowserObservation');
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const row = {
+        id: randomUUID(),
+        run_id: input.runId,
+        provider: input.provider,
+        provider_run_id: input.providerRunId ?? input.providerId,
+        status: input.status,
+        severity: input.severity,
+        failed_step: input.failedStep,
+        expected_behavior: input.expectedBehavior,
+        observed_behavior: input.observedBehavior,
+        viewport: input.viewport ?? {},
+        screenshot_url: input.screenshotUrl,
+        screenshot_key: input.screenshotKey,
+        trace_url: input.traceUrl,
+        trace_key: input.traceKey,
+        dom_summary: input.domSummary,
+        console_errors: input.consoleErrors ?? [],
+        network_errors: input.networkErrors ?? [],
+        result: input.result ?? {},
+        raw: input.raw,
+        created_at: new Date().toISOString(),
+      };
+      const { data, error } = await client.database.from('browser_observations').insert([row]).select('*');
+      throwIfError(error, 'recordBrowserObservation');
 
-  return mapBrowserObservation(firstRow<BrowserObservationRow>(data, 'recordBrowserObservation'));
+      return mapBrowserObservation(firstRow<BrowserObservationRow>(data, 'recordBrowserObservation'));
+    },
+    () => localRecordBrowserObservation(input),
+  );
 }
 
 export async function listBrowserObservations(runId: string): Promise<BrowserObservation[]> {
-  const client = await getInsForgeClient();
-  const { data, error } = await client.database
-    .from('browser_observations')
-    .select('*')
-    .eq('run_id', runId)
-    .order('created_at', { ascending: true });
-  throwIfError(error, 'listBrowserObservations');
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('browser_observations')
+        .select('*')
+        .eq('run_id', runId)
+        .order('created_at', { ascending: true });
+      throwIfError(error, 'listBrowserObservations');
 
-  return Array.isArray(data) ? data.map((row) => mapBrowserObservation(row as BrowserObservationRow)) : [];
+      return Array.isArray(data) ? data.map((row) => mapBrowserObservation(row as BrowserObservationRow)) : [];
+    },
+    () => localListBrowserObservations(runId),
+  );
 }
 
 export async function recordBugHypothesis(input: BugHypothesisInput): Promise<BugHypothesis> {
-  const client = await getInsForgeClient();
-  const { data, error } = await client.database
-    .from('bug_hypotheses')
-    .insert([
-      {
-        id: randomUUID(),
-        run_id: input.runId,
-        summary: input.summary,
-        affected_flow: input.affectedFlow,
-        suspected_cause: input.suspectedCause,
-        confidence: input.confidence,
-        severity: input.severity,
-        acceptance_criteria: input.acceptanceCriteria,
-        evidence: input.evidence ?? {},
-        created_at: new Date().toISOString(),
-      },
-    ])
-    .select('*');
-  throwIfError(error, 'recordBugHypothesis');
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('bug_hypotheses')
+        .insert([
+          {
+            id: randomUUID(),
+            run_id: input.runId,
+            summary: input.summary,
+            affected_flow: input.affectedFlow,
+            suspected_cause: input.suspectedCause,
+            confidence: input.confidence,
+            severity: input.severity,
+            acceptance_criteria: input.acceptanceCriteria,
+            evidence: input.evidence ?? {},
+            created_at: new Date().toISOString(),
+          },
+        ])
+        .select('*');
+      throwIfError(error, 'recordBugHypothesis');
 
-  return mapBugHypothesis(firstRow<BugHypothesisRow>(data, 'recordBugHypothesis'));
+      return mapBugHypothesis(firstRow<BugHypothesisRow>(data, 'recordBugHypothesis'));
+    },
+    () => localRecordBugHypothesis(input),
+  );
 }
 
 export async function listBugHypotheses(runId: string): Promise<BugHypothesis[]> {
-  const client = await getInsForgeClient();
-  const { data, error } = await client.database
-    .from('bug_hypotheses')
-    .select('*')
-    .eq('run_id', runId)
-    .order('created_at', { ascending: true });
-  throwIfError(error, 'listBugHypotheses');
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('bug_hypotheses')
+        .select('*')
+        .eq('run_id', runId)
+        .order('created_at', { ascending: true });
+      throwIfError(error, 'listBugHypotheses');
 
-  return Array.isArray(data) ? data.map((row) => mapBugHypothesis(row as BugHypothesisRow)) : [];
+      return Array.isArray(data) ? data.map((row) => mapBugHypothesis(row as BugHypothesisRow)) : [];
+    },
+    () => localListBugHypotheses(runId),
+  );
 }
 
 export async function recordPatch(input: PatchInput): Promise<PatchRecord> {
-  const now = new Date().toISOString();
-  const client = await getInsForgeClient();
-  const { data, error } = await client.database
-    .from('patches')
-    .insert([
-      {
-        id: randomUUID(),
-        run_id: input.runId,
-        hypothesis_id: input.hypothesisId,
-        branch_name: input.branchName,
-        commit_sha: input.commitSha,
-        status: input.status,
-        summary: input.summary,
-        diff_stat: input.diffStat ?? {},
-        files_changed: input.filesChanged ?? [],
-        raw: input.raw,
-        created_at: now,
-        updated_at: now,
-      },
-    ])
-    .select('*');
-  throwIfError(error, 'recordPatch');
+  return withInsForgeFallback(
+    async () => {
+      const now = new Date().toISOString();
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('patches')
+        .insert([
+          {
+            id: randomUUID(),
+            run_id: input.runId,
+            hypothesis_id: input.hypothesisId,
+            branch_name: input.branchName,
+            commit_sha: input.commitSha,
+            status: input.status,
+            summary: input.summary,
+            diff_stat: input.diffStat ?? {},
+            files_changed: input.filesChanged ?? [],
+            raw: input.raw,
+            created_at: now,
+            updated_at: now,
+          },
+        ])
+        .select('*');
+      throwIfError(error, 'recordPatch');
 
-  return mapPatch(firstRow<PatchRow>(data, 'recordPatch'));
+      return mapPatch(firstRow<PatchRow>(data, 'recordPatch'));
+    },
+    () => localRecordPatch(input),
+  );
 }
 
 export async function listPatches(runId: string): Promise<PatchRecord[]> {
-  const client = await getInsForgeClient();
-  const { data, error } = await client.database
-    .from('patches')
-    .select('*')
-    .eq('run_id', runId)
-    .order('created_at', { ascending: true });
-  throwIfError(error, 'listPatches');
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('patches')
+        .select('*')
+        .eq('run_id', runId)
+        .order('created_at', { ascending: true });
+      throwIfError(error, 'listPatches');
 
-  return Array.isArray(data) ? data.map((row) => mapPatch(row as PatchRow)) : [];
+      return Array.isArray(data) ? data.map((row) => mapPatch(row as PatchRow)) : [];
+    },
+    () => localListPatches(runId),
+  );
 }
 
 export async function recordVerificationResult(input: VerificationResultInput): Promise<VerificationResult> {
-  const client = await getInsForgeClient();
-  const { data, error } = await client.database
-    .from('verification_results')
-    .insert([
-      {
-        id: randomUUID(),
-        run_id: input.runId,
-        patch_id: input.patchId,
-        provider: input.provider,
-        status: input.status,
-        summary: input.summary,
-        test_command: input.testCommand,
-        artifacts: input.artifacts ?? [],
-        raw: input.raw,
-        created_at: new Date().toISOString(),
-      },
-    ])
-    .select('*');
-  throwIfError(error, 'recordVerificationResult');
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('verification_results')
+        .insert([
+          {
+            id: randomUUID(),
+            run_id: input.runId,
+            patch_id: input.patchId,
+            provider: input.provider,
+            status: input.status,
+            summary: input.summary,
+            test_command: input.testCommand,
+            artifacts: input.artifacts ?? [],
+            raw: input.raw,
+            created_at: new Date().toISOString(),
+          },
+        ])
+        .select('*');
+      throwIfError(error, 'recordVerificationResult');
 
-  return mapVerificationResult(firstRow<VerificationResultRow>(data, 'recordVerificationResult'));
+      return mapVerificationResult(firstRow<VerificationResultRow>(data, 'recordVerificationResult'));
+    },
+    () => localRecordVerificationResult(input),
+  );
 }
 
 export async function listVerificationResults(runId: string): Promise<VerificationResult[]> {
-  const client = await getInsForgeClient();
-  const { data, error } = await client.database
-    .from('verification_results')
-    .select('*')
-    .eq('run_id', runId)
-    .order('created_at', { ascending: true });
-  throwIfError(error, 'listVerificationResults');
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('verification_results')
+        .select('*')
+        .eq('run_id', runId)
+        .order('created_at', { ascending: true });
+      throwIfError(error, 'listVerificationResults');
 
-  return Array.isArray(data) ? data.map((row) => mapVerificationResult(row as VerificationResultRow)) : [];
+      return Array.isArray(data) ? data.map((row) => mapVerificationResult(row as VerificationResultRow)) : [];
+    },
+    () => localListVerificationResults(runId),
+  );
 }
 
 export async function recordPullRequest(input: PullRequestInput): Promise<PullRequestRecord> {
-  const now = new Date().toISOString();
-  const client = await getInsForgeClient();
-  const { data, error } = await client.database
-    .from('pull_requests')
-    .insert([
-      {
-        id: randomUUID(),
-        run_id: input.runId,
-        patch_id: input.patchId,
-        provider: input.provider ?? 'github',
-        number: input.number,
-        title: input.title,
-        branch_name: input.branchName,
-        base_branch: input.baseBranch,
-        url: input.url,
-        status: input.status,
-        raw: input.raw,
-        created_at: now,
-        updated_at: now,
-      },
-    ])
-    .select('*');
-  throwIfError(error, 'recordPullRequest');
+  return withInsForgeFallback(
+    async () => {
+      const now = new Date().toISOString();
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('pull_requests')
+        .insert([
+          {
+            id: randomUUID(),
+            run_id: input.runId,
+            patch_id: input.patchId,
+            provider: input.provider ?? 'github',
+            number: input.number,
+            title: input.title,
+            branch_name: input.branchName,
+            base_branch: input.baseBranch,
+            url: input.url,
+            status: input.status,
+            raw: input.raw,
+            created_at: now,
+            updated_at: now,
+          },
+        ])
+        .select('*');
+      throwIfError(error, 'recordPullRequest');
 
-  return mapPullRequest(firstRow<PullRequestRow>(data, 'recordPullRequest'));
+      return mapPullRequest(firstRow<PullRequestRow>(data, 'recordPullRequest'));
+    },
+    () => localRecordPullRequest(input),
+  );
 }
 
 export async function listPullRequests(runId: string): Promise<PullRequestRecord[]> {
-  const client = await getInsForgeClient();
-  const { data, error } = await client.database
-    .from('pull_requests')
-    .select('*')
-    .eq('run_id', runId)
-    .order('created_at', { ascending: true });
-  throwIfError(error, 'listPullRequests');
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('pull_requests')
+        .select('*')
+        .eq('run_id', runId)
+        .order('created_at', { ascending: true });
+      throwIfError(error, 'listPullRequests');
 
-  return Array.isArray(data) ? data.map((row) => mapPullRequest(row as PullRequestRow)) : [];
+      return Array.isArray(data) ? data.map((row) => mapPullRequest(row as PullRequestRow)) : [];
+    },
+    () => localListPullRequests(runId),
+  );
 }
 
 export interface PullRequestUpdateInput {
@@ -1316,149 +1493,179 @@ export interface PullRequestUpdateInput {
 }
 
 export async function updatePullRequest(id: string, input: PullRequestUpdateInput): Promise<PullRequestRecord> {
-  const update: Record<string, unknown> = {
-    updated_at: new Date().toISOString(),
-  };
+  return withInsForgeFallback(
+    async () => {
+      const update: Record<string, unknown> = {
+        updated_at: new Date().toISOString(),
+      };
 
-  if (input.status !== undefined) update.status = input.status;
-  if (input.number !== undefined) update.number = input.number;
-  if (input.url !== undefined) update.url = input.url;
-  if (input.raw !== undefined) update.raw = input.raw;
+      if (input.status !== undefined) update.status = input.status;
+      if (input.number !== undefined) update.number = input.number;
+      if (input.url !== undefined) update.url = input.url;
+      if (input.raw !== undefined) update.raw = input.raw;
 
-  const client = await getInsForgeClient();
-  const { data, error } = await client.database
-    .from('pull_requests')
-    .update(update)
-    .eq('id', id)
-    .select('*');
-  throwIfError(error, 'updatePullRequest');
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('pull_requests')
+        .update(update)
+        .eq('id', id)
+        .select('*');
+      throwIfError(error, 'updatePullRequest');
 
-  return mapPullRequest(firstRow<PullRequestRow>(data, 'updatePullRequest'));
+      return mapPullRequest(firstRow<PullRequestRow>(data, 'updatePullRequest'));
+    },
+    () => localUpdatePullRequest(id, input),
+  );
 }
 
 export async function recordPolicyHit(input: PolicyHitInput): Promise<PolicyHit> {
-  const client = await getInsForgeClient();
-  const { data, error } = await client.database
-    .from('policy_hits')
-    .insert([
-      {
-        id: randomUUID(),
-        run_id: input.runId,
-        provider: input.provider,
-        query: input.query,
-        title: input.title,
-        source_url: input.sourceUrl,
-        summary: input.summary,
-        score: input.score,
-        raw: input.raw,
-        created_at: new Date().toISOString(),
-      },
-    ])
-    .select('*');
-  throwIfError(error, 'recordPolicyHit');
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('policy_hits')
+        .insert([
+          {
+            id: randomUUID(),
+            run_id: input.runId,
+            provider: input.provider,
+            query: input.query,
+            title: input.title,
+            source_url: input.sourceUrl,
+            summary: input.summary,
+            score: input.score,
+            raw: input.raw,
+            created_at: new Date().toISOString(),
+          },
+        ])
+        .select('*');
+      throwIfError(error, 'recordPolicyHit');
 
-  return mapPolicyHit(firstRow<PolicyHitRow>(data, 'recordPolicyHit'));
+      return mapPolicyHit(firstRow<PolicyHitRow>(data, 'recordPolicyHit'));
+    },
+    () => localRecordPolicyHit(input),
+  );
 }
 
 export async function listPolicyHits(runId: string): Promise<PolicyHit[]> {
-  const client = await getInsForgeClient();
-  const { data, error } = await client.database
-    .from('policy_hits')
-    .select('*')
-    .eq('run_id', runId)
-    .order('created_at', { ascending: true });
-  throwIfError(error, 'listPolicyHits');
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('policy_hits')
+        .select('*')
+        .eq('run_id', runId)
+        .order('created_at', { ascending: true });
+      throwIfError(error, 'listPolicyHits');
 
-  return Array.isArray(data) ? data.map((row) => mapPolicyHit(row as PolicyHitRow)) : [];
+      return Array.isArray(data) ? data.map((row) => mapPolicyHit(row as PolicyHitRow)) : [];
+    },
+    () => localListPolicyHits(runId),
+  );
 }
 
 export async function recordAgentMemory(input: AgentMemoryInput): Promise<AgentMemory> {
-  const client = await getInsForgeClient();
-  const now = new Date().toISOString();
-  const { data: existing, error: lookupError } = await client.database
-    .from('agent_memories')
-    .select('*')
-    .eq('project_id', input.projectId)
-    .eq('scope', input.scope)
-    .eq('key', input.key)
-    .maybeSingle();
-  throwIfError(lookupError, 'recordAgentMemory lookup');
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const now = new Date().toISOString();
+      const { data: existing, error: lookupError } = await client.database
+        .from('agent_memories')
+        .select('*')
+        .eq('project_id', input.projectId)
+        .eq('scope', input.scope)
+        .eq('key', input.key)
+        .maybeSingle();
+      throwIfError(lookupError, 'recordAgentMemory lookup');
 
-  if (existing) {
-    const { data, error } = await client.database
-      .from('agent_memories')
-      .update({
-        run_id: input.runId,
-        value: input.value,
-        confidence: input.confidence ?? 1,
-        expires_at: input.expiresAt,
-        updated_at: now,
-      })
-      .eq('id', (existing as AgentMemoryRow).id)
-      .select('*');
-    throwIfError(error, 'recordAgentMemory update');
+      if (existing) {
+        const { data, error } = await client.database
+          .from('agent_memories')
+          .update({
+            run_id: input.runId,
+            value: input.value,
+            confidence: input.confidence ?? 1,
+            expires_at: input.expiresAt,
+            updated_at: now,
+          })
+          .eq('id', (existing as AgentMemoryRow).id)
+          .select('*');
+        throwIfError(error, 'recordAgentMemory update');
 
-    return mapAgentMemory(firstRow<AgentMemoryRow>(data, 'recordAgentMemory update'));
-  }
+        return mapAgentMemory(firstRow<AgentMemoryRow>(data, 'recordAgentMemory update'));
+      }
 
-  const { data, error } = await client.database
-    .from('agent_memories')
-    .insert([
-      {
-        id: randomUUID(),
-        project_id: input.projectId,
-        run_id: input.runId,
-        scope: input.scope,
-        key: input.key,
-        value: input.value,
-        confidence: input.confidence ?? 1,
-        expires_at: input.expiresAt,
-        created_at: now,
-        updated_at: now,
-      },
-    ])
-    .select('*');
-  throwIfError(error, 'recordAgentMemory insert');
+      const { data, error } = await client.database
+        .from('agent_memories')
+        .insert([
+          {
+            id: randomUUID(),
+            project_id: input.projectId,
+            run_id: input.runId,
+            scope: input.scope,
+            key: input.key,
+            value: input.value,
+            confidence: input.confidence ?? 1,
+            expires_at: input.expiresAt,
+            created_at: now,
+            updated_at: now,
+          },
+        ])
+        .select('*');
+      throwIfError(error, 'recordAgentMemory insert');
 
-  return mapAgentMemory(firstRow<AgentMemoryRow>(data, 'recordAgentMemory insert'));
+      return mapAgentMemory(firstRow<AgentMemoryRow>(data, 'recordAgentMemory insert'));
+    },
+    () => localRecordAgentMemory(input),
+  );
 }
 
 export async function listAgentMemories(projectId: string): Promise<AgentMemory[]> {
-  const client = await getInsForgeClient();
-  const { data, error } = await client.database
-    .from('agent_memories')
-    .select('*')
-    .eq('project_id', projectId)
-    .order('updated_at', { ascending: false });
-  throwIfError(error, 'listAgentMemories');
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('agent_memories')
+        .select('*')
+        .eq('project_id', projectId)
+        .order('updated_at', { ascending: false });
+      throwIfError(error, 'listAgentMemories');
 
-  return Array.isArray(data) ? data.map((row) => mapAgentMemory(row as AgentMemoryRow)) : [];
+      return Array.isArray(data) ? data.map((row) => mapAgentMemory(row as AgentMemoryRow)) : [];
+    },
+    () => localListAgentMemories(projectId),
+  );
 }
 
 export async function recordAgentSession(input: AgentSessionInput): Promise<AgentSession> {
-  const now = new Date().toISOString();
-  const client = await getInsForgeClient();
-  const { data, error } = await client.database
-    .from('agent_sessions')
-    .insert([
-      {
-        id: randomUUID(),
-        run_id: input.runId,
-        sponsor: input.sponsor ?? 'guildai',
-        provider_session_id: input.providerSessionId,
-        status: input.status,
-        goal: input.goal,
-        metadata: input.metadata ?? {},
-        started_at: input.startedAt,
-        ended_at: input.endedAt,
-        created_at: now,
-        updated_at: now,
-      },
-    ])
-    .select('*');
-  throwIfError(error, 'recordAgentSession');
+  return withInsForgeFallback(
+    async () => {
+      const now = new Date().toISOString();
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('agent_sessions')
+        .insert([
+          {
+            id: randomUUID(),
+            run_id: input.runId,
+            sponsor: input.sponsor ?? 'guildai',
+            provider_session_id: input.providerSessionId,
+            status: input.status,
+            goal: input.goal,
+            metadata: input.metadata ?? {},
+            started_at: input.startedAt,
+            ended_at: input.endedAt,
+            created_at: now,
+            updated_at: now,
+          },
+        ])
+        .select('*');
+      throwIfError(error, 'recordAgentSession');
 
-  return mapAgentSession(firstRow<AgentSessionRow>(data, 'recordAgentSession'));
+      return mapAgentSession(firstRow<AgentSessionRow>(data, 'recordAgentSession'));
+    },
+    () => localRecordAgentSession(input),
+  );
 }
 
 export async function updateAgentSessionsForRun(
@@ -1466,161 +1673,196 @@ export async function updateAgentSessionsForRun(
   status: AgentSessionStatus,
   metadata: JsonRecord = {},
 ): Promise<AgentSession[]> {
-  const update: JsonRecord = {
-    status,
-    metadata,
-    updated_at: new Date().toISOString(),
-  };
+  return withInsForgeFallback(
+    async () => {
+      const update: JsonRecord = {
+        status,
+        metadata,
+        updated_at: new Date().toISOString(),
+      };
 
-  if (status === 'completed' || status === 'failed') {
-    update.ended_at = new Date().toISOString();
-  }
+      if (status === 'completed' || status === 'failed') {
+        update.ended_at = new Date().toISOString();
+      }
 
-  const client = await getInsForgeClient();
-  const { data, error } = await client.database
-    .from('agent_sessions')
-    .update(update)
-    .eq('run_id', runId)
-    .select('*');
-  throwIfError(error, 'updateAgentSessionsForRun');
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('agent_sessions')
+        .update(update)
+        .eq('run_id', runId)
+        .select('*');
+      throwIfError(error, 'updateAgentSessionsForRun');
 
-  return Array.isArray(data) ? data.map((row) => mapAgentSession(row as AgentSessionRow)) : [];
+      return Array.isArray(data) ? data.map((row) => mapAgentSession(row as AgentSessionRow)) : [];
+    },
+    () => localUpdateAgentSessionsForRun(runId, status, metadata),
+  );
 }
 
 export async function listAgentSessions(runId: string): Promise<AgentSession[]> {
-  const client = await getInsForgeClient();
-  const { data, error } = await client.database
-    .from('agent_sessions')
-    .select('*')
-    .eq('run_id', runId)
-    .order('created_at', { ascending: true });
-  throwIfError(error, 'listAgentSessions');
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('agent_sessions')
+        .select('*')
+        .eq('run_id', runId)
+        .order('created_at', { ascending: true });
+      throwIfError(error, 'listAgentSessions');
 
-  return Array.isArray(data) ? data.map((row) => mapAgentSession(row as AgentSessionRow)) : [];
+      return Array.isArray(data) ? data.map((row) => mapAgentSession(row as AgentSessionRow)) : [];
+    },
+    () => localListAgentSessions(runId),
+  );
 }
 
 export async function recordActionGate(input: ActionGateInput): Promise<ActionGate> {
-  const client = await getInsForgeClient();
-  const { data, error } = await client.database
-    .from('action_gates')
-    .insert([
-      {
-        id: randomUUID(),
-        run_id: input.runId,
-        session_id: input.sessionId,
-        gate_type: input.gateType,
-        risk_level: input.riskLevel,
-        status: input.status,
-        reason: input.reason,
-        requested_by: input.requestedBy,
-        resolved_by: input.resolvedBy,
-        metadata: input.metadata ?? {},
-        created_at: new Date().toISOString(),
-        resolved_at: input.resolvedAt,
-      },
-    ])
-    .select('*');
-  throwIfError(error, 'recordActionGate');
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('action_gates')
+        .insert([
+          {
+            id: randomUUID(),
+            run_id: input.runId,
+            session_id: input.sessionId,
+            gate_type: input.gateType,
+            risk_level: input.riskLevel,
+            status: input.status,
+            reason: input.reason,
+            requested_by: input.requestedBy,
+            resolved_by: input.resolvedBy,
+            metadata: input.metadata ?? {},
+            created_at: new Date().toISOString(),
+            resolved_at: input.resolvedAt,
+          },
+        ])
+        .select('*');
+      throwIfError(error, 'recordActionGate');
 
-  return mapActionGate(firstRow<ActionGateRow>(data, 'recordActionGate'));
+      return mapActionGate(firstRow<ActionGateRow>(data, 'recordActionGate'));
+    },
+    () => localRecordActionGate(input),
+  );
 }
 
 export async function listActionGates(runId: string): Promise<ActionGate[]> {
-  const client = await getInsForgeClient();
-  const { data, error } = await client.database
-    .from('action_gates')
-    .select('*')
-    .eq('run_id', runId)
-    .order('created_at', { ascending: true });
-  throwIfError(error, 'listActionGates');
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('action_gates')
+        .select('*')
+        .eq('run_id', runId)
+        .order('created_at', { ascending: true });
+      throwIfError(error, 'listActionGates');
 
-  return Array.isArray(data) ? data.map((row) => mapActionGate(row as ActionGateRow)) : [];
+      return Array.isArray(data) ? data.map((row) => mapActionGate(row as ActionGateRow)) : [];
+    },
+    () => localListActionGates(runId),
+  );
 }
 
 export async function recordBenchmarkEvaluation(
   input: BenchmarkEvaluationInput,
 ): Promise<BenchmarkEvaluation> {
-  const client = await getInsForgeClient();
-  const { data, error } = await client.database
-    .from('benchmark_evaluations')
-    .insert([
-      {
-        id: randomUUID(),
-        run_id: input.runId,
-        sponsor: input.sponsor ?? 'guildai',
-        benchmark_name: input.benchmarkName,
-        score: input.score,
-        status: input.status,
-        metrics: input.metrics ?? {},
-        artifact_url: input.artifactUrl,
-        raw: input.raw,
-        created_at: new Date().toISOString(),
-      },
-    ])
-    .select('*');
-  throwIfError(error, 'recordBenchmarkEvaluation');
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('benchmark_evaluations')
+        .insert([
+          {
+            id: randomUUID(),
+            run_id: input.runId,
+            sponsor: input.sponsor ?? 'guildai',
+            benchmark_name: input.benchmarkName,
+            score: input.score,
+            status: input.status,
+            metrics: input.metrics ?? {},
+            artifact_url: input.artifactUrl,
+            raw: input.raw,
+            created_at: new Date().toISOString(),
+          },
+        ])
+        .select('*');
+      throwIfError(error, 'recordBenchmarkEvaluation');
 
-  return mapBenchmarkEvaluation(firstRow<BenchmarkEvaluationRow>(data, 'recordBenchmarkEvaluation'));
+      return mapBenchmarkEvaluation(firstRow<BenchmarkEvaluationRow>(data, 'recordBenchmarkEvaluation'));
+    },
+    () => localRecordBenchmarkEvaluation(input),
+  );
 }
 
 export async function listBenchmarkEvaluations(runId: string): Promise<BenchmarkEvaluation[]> {
-  const client = await getInsForgeClient();
-  const { data, error } = await client.database
-    .from('benchmark_evaluations')
-    .select('*')
-    .eq('run_id', runId)
-    .order('created_at', { ascending: true });
-  throwIfError(error, 'listBenchmarkEvaluations');
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('benchmark_evaluations')
+        .select('*')
+        .eq('run_id', runId)
+        .order('created_at', { ascending: true });
+      throwIfError(error, 'listBenchmarkEvaluations');
 
-  return Array.isArray(data) ? data.map((row) => mapBenchmarkEvaluation(row as BenchmarkEvaluationRow)) : [];
+      return Array.isArray(data) ? data.map((row) => mapBenchmarkEvaluation(row as BenchmarkEvaluationRow)) : [];
+    },
+    () => localListBenchmarkEvaluations(runId),
+  );
 }
 
 export async function getRunDetail(runId: string): Promise<RunDetail | null> {
-  const run = await getRun(runId);
+  return withInsForgeFallback(
+    async () => {
+      const run = await getRun(runId);
 
-  if (!run) return null;
+      if (!run) return null;
 
-  const [
-    timelineEvents,
-    providerArtifacts,
-    browserObservations,
-    bugHypotheses,
-    patches,
-    verificationResults,
-    pullRequests,
-    policyHits,
-    agentMemories,
-    agentSessions,
-    actionGates,
-    benchmarkEvaluations,
-  ] = await Promise.all([
-    listTimelineEvents(runId),
-    listProviderArtifacts(runId),
-    listBrowserObservations(runId),
-    listBugHypotheses(runId),
-    listPatches(runId),
-    listVerificationResults(runId),
-    listPullRequests(runId),
-    listPolicyHits(runId),
-    listAgentMemories(run.projectId),
-    listAgentSessions(runId),
-    listActionGates(runId),
-    listBenchmarkEvaluations(runId),
-  ]);
+      const [
+        timelineEvents,
+        providerArtifacts,
+        browserObservations,
+        bugHypotheses,
+        patches,
+        verificationResults,
+        pullRequests,
+        policyHits,
+        agentMemories,
+        agentSessions,
+        actionGates,
+        benchmarkEvaluations,
+      ] = await Promise.all([
+        listTimelineEvents(runId),
+        listProviderArtifacts(runId),
+        listBrowserObservations(runId),
+        listBugHypotheses(runId),
+        listPatches(runId),
+        listVerificationResults(runId),
+        listPullRequests(runId),
+        listPolicyHits(runId),
+        listAgentMemories(run.projectId),
+        listAgentSessions(runId),
+        listActionGates(runId),
+        listBenchmarkEvaluations(runId),
+      ]);
 
-  return {
-    run,
-    timelineEvents,
-    providerArtifacts,
-    browserObservations,
-    bugHypotheses,
-    patches,
-    verificationResults,
-    pullRequests,
-    policyHits,
-    agentMemories,
-    agentSessions,
-    actionGates,
-    benchmarkEvaluations,
-  };
+      return {
+        run,
+        timelineEvents,
+        providerArtifacts,
+        browserObservations,
+        bugHypotheses,
+        patches,
+        verificationResults,
+        pullRequests,
+        policyHits,
+        agentMemories,
+        agentSessions,
+        actionGates,
+        benchmarkEvaluations,
+      };
+    },
+    () => localGetRunDetail(runId),
+  );
 }

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { getRunDetail, summarizeRunReadiness } from '@flowpr/tools';
+import { getRunDetail } from '@flowpr/tools/insforge';
+import { summarizeRunReadiness } from '@flowpr/tools/readiness';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';

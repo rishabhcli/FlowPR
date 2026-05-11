@@ -121,6 +121,13 @@ export async function writeWorkerHeartbeat(
       currentPhase: input.currentPhase,
     }),
   );
+  const staleCurrentFields = [
+    input.currentRunId ? undefined : 'currentRunId',
+    input.currentPhase ? undefined : 'currentPhase',
+  ].filter((field): field is string => Boolean(field));
+  if (staleCurrentFields.length > 0) {
+    await client.hDel(key, staleCurrentFields);
+  }
   await client.expire(key, ttlSeconds);
 }
 

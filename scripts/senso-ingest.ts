@@ -1,8 +1,8 @@
+import { loadLocalEnv } from '@flowpr/tools/env';
 import {
   FLOWPR_SENSO_SEED_DOCUMENTS,
   createSensoClient,
-  loadLocalEnv,
-} from '@flowpr/tools';
+} from '@flowpr/tools/senso';
 
 loadLocalEnv();
 

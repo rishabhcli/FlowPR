@@ -1,0 +1,66 @@
+{
+  "name": "dead-letter-next-action",
+  "flowGoal": "Classify dead-letter events as unresolved, historical, or orphaned and show the correct next action.",
+  "expectedBugType": "dead_letter_recovery",
+  "successCondition": "Dead-letter rows include a replay, audit, or orphan-resolution action instead of a raw Redis error only.",
+  "riskLevel": "high",
+  "viewport": { "width": 1280, "height": 900 },
+  "expectedEvidence": {
+    "providers": ["redis", "insforge", "playwright"],
+    "artifacts": ["dead-letter stream entry", "run status lookup", "health recovery queue"],
+    "signals": [
+      "Failed runs point operators to pnpm run:replay <runId> --fail-on-not-ready",
+      "Resolved dead-letter rows are marked historical",
+      "Orphaned dead-letter rows tell operators to recover the missing run record first"
+    ]
+  },
+  "expectedDiagnosis": {
+    "bugType": "dead_letter_recovery",
+    "severity": "high",
+    "likelyFiles": [
+      "packages/tools/src/recovery.ts",
+      "apps/dashboard/app/api/dead-letter/route.ts",
+      "apps/dashboard/app/health/page.tsx"
+    ]
+  },
+  "expectedPatch": {
+    "filesChanged": [
+      "packages/tools/src/recovery.ts",
+      "apps/dashboard/app/api/dead-letter/route.ts",
+      "apps/dashboard/app/health/page.tsx",
+      "scripts/recovery-visibility-smoke.ts"
+    ]
+  },
+  "expectedReadiness": {
+    "overall": "ready-or-actionable",
+    "requiredSignals": ["deadLetter.count", "deadLetter.resolved", "deadLetter.orphaned", "deadLetter.nextAction"]
+  },
+  "expectedRecovery": {
+    "signals": [
+      "buildDeadLetterNextAction returns replay guidance for unresolved run-scoped failures",
+      "buildDeadLetterNextAction returns historical audit guidance for resolved failures",
+      "buildDeadLetterNextAction returns missing-run guidance for orphaned failures"
+    ],
+    "nextActions": [
+      "pnpm run:replay <runId> --fail-on-not-ready",
+      "inspect the Redis dead-letter stream",
+      "Find the missing run in InsForge or the local fallback store"
+    ],
+    "commands": ["pnpm recovery:smoke"]
+  },
+  "verification": {
+    "command": "pnpm recovery:smoke",
+    "testName": "Recovery visibility smoke ok.",
+    "successCondition": "Dead-letter recovery guidance covers failed, resolved, and orphaned cases."
+  },
+  "fixtures": {
+    "category": "runtime-recovery",
+    "previewUrl": "http://localhost:3000/health",
+    "expectedFilesChanged": [
+      "packages/tools/src/recovery.ts",
+      "apps/dashboard/app/api/dead-letter/route.ts",
+      "apps/dashboard/app/health/page.tsx",
+      "scripts/recovery-visibility-smoke.ts"
+    ]
+  }
+}

@@ -2,12 +2,15 @@ import { NextResponse } from 'next/server';
 import {
   appendTimelineEvent,
   getRun,
-  hasGitHubCredentials,
   listPullRequests,
-  mergeGitHubPullRequest,
   recordProviderArtifact,
   updatePullRequest,
-} from '@flowpr/tools';
+} from '@flowpr/tools/insforge';
+import {
+  hasGitHubCredentials,
+  mergeGitHubPullRequest,
+} from '@flowpr/tools/github';
+import { hasPullRequestArtifact } from '@flowpr/schemas';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -38,7 +41,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     }
 
     const pullRequests = await listPullRequests(run.id);
-    const latest = pullRequests[pullRequests.length - 1];
+    const latest = [...pullRequests].reverse().find(hasPullRequestArtifact);
 
     if (!latest || !latest.number) {
       return NextResponse.json(

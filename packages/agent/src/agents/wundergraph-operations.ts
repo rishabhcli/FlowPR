@@ -3,7 +3,7 @@ import {
   type WunderGraphOperationRequest,
   type WunderGraphOperationResult,
   type WunderGraphSafeOperation,
-} from '@flowpr/tools';
+} from '@flowpr/tools/wundergraph';
 
 export interface SafeOperationInput<T> {
   operation: WunderGraphSafeOperation;

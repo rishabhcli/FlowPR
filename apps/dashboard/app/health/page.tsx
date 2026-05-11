@@ -56,6 +56,8 @@ interface WorkerStatus {
   processed?: number;
   currentRunId?: string;
   currentPhase?: string;
+  currentRunStatus?: string;
+  currentRunActive?: boolean;
   ageMs: number;
   alive: boolean;
 }
@@ -70,17 +72,26 @@ interface WorkerStatusResponse {
 interface DeadLetterEntry {
   id: string;
   runId: string;
+  runStatus?: string;
   sourceStream?: string;
   eventType?: string;
   phase?: string;
   attempt?: number;
   error?: string;
   createdAt?: string;
+  orphaned?: boolean;
+  resolved?: boolean;
+  resolutionReason?: string;
+  nextAction?: string;
 }
 
 interface DeadLetterResponse {
   entries: DeadLetterEntry[];
   count: number;
+  total?: number;
+  resolved?: number;
+  orphaned?: number;
+  nextAction?: string;
   generatedAt: string;
   error?: string;
 }
@@ -235,6 +246,10 @@ export default function HealthPage() {
       return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
     });
   }, [data]);
+
+  const stuckRuns = observability.data?.recovery?.stuckRuns ?? [];
+  const unresolvedDeadLetters = deadLetter?.entries.filter((entry) => !entry.resolved) ?? [];
+  const hasRecoveryWork = stuckRuns.length > 0 || unresolvedDeadLetters.length > 0;
 
   return (
     <>
@@ -402,54 +417,146 @@ export default function HealthPage() {
                 <GitHubConnectionPanel />
               </section>
 
-              {deadLetter && deadLetter.entries.length > 0 && (
-                <Card className="mb-6 border-destructive/40 bg-destructive/5">
+              {(deadLetter || observability.data) && (
+                <Card
+                  className={cn(
+                    'mb-6',
+                    hasRecoveryWork
+                      ? 'border-destructive/40 bg-destructive/5'
+                      : 'border-success/30 bg-success/5',
+                  )}
+                >
                   <CardHeader className="pb-3">
                     <div className="flex items-center justify-between gap-2">
-                      <CardTitle className="flex items-center gap-2 text-sm uppercase tracking-wide text-destructive">
-                        <Siren className="h-4 w-4" /> Attention queue
+                      <CardTitle
+                        className={cn(
+                          'flex items-center gap-2 text-sm uppercase tracking-wide',
+                          hasRecoveryWork ? 'text-destructive' : 'text-success',
+                        )}
+                      >
+                        <Siren className="h-4 w-4" /> Recovery queue
                       </CardTitle>
                       <span className="text-[11px] text-muted-foreground">
-                        {deadLetter.count} entries
+                        {stuckRuns.length} stuck
+                        {deadLetter ? ` · ${deadLetter.count} dead-letter` : ''}
+                        {deadLetter?.resolved ? ` · ${deadLetter.resolved} historical` : ''}
+                        {deadLetter?.orphaned ? ` · ${deadLetter.orphaned} orphaned` : ''}
                       </span>
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      Events that need an operator look before the run can continue cleanly.
+                      Stuck runs and unresolved dead-letter events with the next operator action.
                     </p>
                   </CardHeader>
                   <CardContent>
-                    <ul className="space-y-2">
-                      {deadLetter.entries.slice(0, 8).map((entry) => (
-                        <li
-                          key={entry.id}
-                          className="flex items-start justify-between gap-3 rounded-md border border-destructive/20 bg-card/60 p-3"
-                        >
-                          <div className="min-w-0 flex-1">
-                            <p className="text-xs font-medium text-foreground">
-                              {entry.phase ? entry.phase.replace(/_/g, ' ') : entry.eventType ?? 'unknown'}
-                              {entry.attempt && ` · attempt ${entry.attempt}`}
+                    {!hasRecoveryWork ? (
+                      <div className="flex items-center justify-between gap-3 rounded-md border border-success/20 bg-card/60 p-3">
+                        <div>
+                          <p className="text-xs font-medium text-foreground">
+                            No recovery actions waiting.
+                          </p>
+                          <p className="mt-0.5 text-[11px] text-muted-foreground">
+                            Active runs are claimed by live workers and the latest dead-letter events are historical.
+                          </p>
+                        </div>
+                        <CheckCheck className="h-4 w-4 text-success" />
+                      </div>
+                    ) : (
+                      <div className="grid gap-3 lg:grid-cols-2">
+                        {stuckRuns.length > 0 && (
+                          <div>
+                            <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                              Stuck runs
                             </p>
-                            {entry.error && (
-                              <p className="mt-0.5 line-clamp-2 font-mono text-[11px] text-destructive">
-                                {entry.error}
-                              </p>
-                            )}
-                            <p className="mt-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
-                              {entry.sourceStream}
-                              {entry.createdAt && ` · ${formatRelativeTime(entry.createdAt)}`}
-                            </p>
+                            <ul className="space-y-2">
+                              {stuckRuns.slice(0, 5).map((run) => (
+                                <li
+                                  key={run.id}
+                                  className="rounded-md border border-destructive/20 bg-card/60 p-3"
+                                >
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                      <p className="text-xs font-medium text-foreground">
+                                        {run.status.replace(/_/g, ' ')} · {formatDurationShort(run.ageMs)}
+                                      </p>
+                                      <p className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground">
+                                        {run.reason}
+                                      </p>
+                                      <p className="mt-1 font-mono text-[10px] text-muted-foreground">
+                                        {run.nextAction}
+                                      </p>
+                                    </div>
+                                    <Link
+                                      href={`/runs/${run.id}`}
+                                      className="shrink-0 font-mono text-[11px] text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                                    >
+                                      {run.id.slice(0, 8)}
+                                    </Link>
+                                  </div>
+                                </li>
+                              ))}
+                            </ul>
                           </div>
-                          {entry.runId && (
-                            <Link
-                              href={`/runs/${entry.runId}`}
-                              className="shrink-0 self-center font-mono text-[11px] text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-                            >
-                              {entry.runId.slice(0, 8)}
-                            </Link>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
+                        )}
+
+                        {unresolvedDeadLetters.length > 0 && (
+                          <div>
+                            <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                              Dead-letter events
+                            </p>
+                            <ul className="space-y-2">
+                              {unresolvedDeadLetters.slice(0, 8).map((entry) => (
+                                <li
+                                  key={entry.id}
+                                  className="rounded-md border border-destructive/20 bg-card/60 p-3"
+                                >
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0 flex-1">
+                                      <p className="text-xs font-medium text-foreground">
+                                        {entry.phase ? entry.phase.replace(/_/g, ' ') : entry.eventType ?? 'unknown'}
+                                        {entry.attempt && ` · attempt ${entry.attempt}`}
+                                      </p>
+                                      {entry.error && (
+                                        <p className="mt-0.5 line-clamp-2 font-mono text-[11px] text-destructive">
+                                          {entry.error}
+                                        </p>
+                                      )}
+                                      <p className="mt-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                                        {entry.sourceStream}
+                                        {entry.createdAt && ` · ${formatRelativeTime(entry.createdAt)}`}
+                                      </p>
+                                      {entry.nextAction && (
+                                        <p className="mt-1 font-mono text-[10px] text-muted-foreground">
+                                          {entry.nextAction}
+                                        </p>
+                                      )}
+                                    </div>
+                                    {entry.runId && (
+                                      <Link
+                                        href={`/runs/${entry.runId}`}
+                                        className="shrink-0 font-mono text-[11px] text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                                      >
+                                        {entry.runId.slice(0, 8)}
+                                      </Link>
+                                    )}
+                                  </div>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {deadLetter?.error && (
+                      <Alert variant="destructive" className="mt-3">
+                        <AlertTriangle className="h-4 w-4" />
+                        <AlertDescription>{deadLetter.error}</AlertDescription>
+                      </Alert>
+                    )}
+                    {observability.data?.recovery?.actionSummary && (
+                      <p className="mt-3 rounded-md border border-border bg-card/50 px-3 py-2 font-mono text-[10px] text-muted-foreground">
+                        Next: {observability.data.recovery.actionSummary}
+                      </p>
+                    )}
                   </CardContent>
                 </Card>
               )}
@@ -479,8 +586,9 @@ export default function HealthPage() {
                             </p>
                             {worker.currentRunId && (
                               <p className="mt-0.5 text-[11px] text-muted-foreground">
-                                on run {worker.currentRunId.slice(0, 8)}
-                                {worker.currentPhase && ` · ${worker.currentPhase.replace(/_/g, ' ')}`}
+                                {worker.currentRunActive ? 'on run' : 'last run'} {worker.currentRunId.slice(0, 8)}
+                                {worker.currentRunActive && worker.currentPhase && ` · ${worker.currentPhase.replace(/_/g, ' ')}`}
+                                {!worker.currentRunActive && worker.currentRunStatus && ` · ${worker.currentRunStatus.replace(/_/g, ' ')}`}
                               </p>
                             )}
                           </div>

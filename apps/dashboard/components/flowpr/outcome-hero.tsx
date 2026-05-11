@@ -15,6 +15,10 @@ import {
 } from 'lucide-react';
 import type { ComponentType, ReactNode } from 'react';
 import type { RunDetail } from '@flowpr/schemas';
+import {
+  hasPassedLocalPlaywrightObservation,
+  isIgnoredRemoteLocalhostObservation,
+} from '@flowpr/schemas';
 
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -67,6 +71,8 @@ const PHASE_LABELS: Record<string, string> = {
   learned: 'saving learnings',
 };
 
+const FINAL_VERIFICATION_PROVIDERS = new Set(['local', 'tinyfish-live']);
+
 function deriveOutcome(detail: RunDetail): OutcomeShape {
   const { run } = detail;
   const elapsedMs = run.startedAt
@@ -80,15 +86,20 @@ function deriveOutcome(detail: RunDetail): OutcomeShape {
   const latestHypothesis =
     detail.bugHypotheses[detail.bugHypotheses.length - 1];
 
-  const verifications = detail.verificationResults ?? [];
-  const passedCount = verifications.filter((v) => v.status === 'passed').length;
-  const failedCount = verifications.filter(
-    (v) => v.status === 'failed' || v.status === 'errored',
+  const verificationResults = detail.verificationResults ?? [];
+  const finalVerifications = verificationResults.filter((v) =>
+    FINAL_VERIFICATION_PROVIDERS.has(v.provider),
+  );
+  const finalPassedCount = finalVerifications.filter((v) => v.status === 'passed').length;
+  const evidenceFailures = verificationResults.filter(
+    (v) =>
+      !FINAL_VERIFICATION_PROVIDERS.has(v.provider) &&
+      (v.status === 'failed' || v.status === 'errored'),
   ).length;
-  const verificationLabel =
-    verifications.length === 0
-      ? 'no verifications run'
-      : `${passedCount} of ${verifications.length} passed`;
+  const finalVerificationLabel =
+    finalVerifications.length === 0
+      ? 'not run yet'
+      : `${finalPassedCount} / ${finalVerifications.length} passed`;
 
   const filesChanged = latestPatch?.filesChanged?.length ?? 0;
   const filesLabel = `${filesChanged} file${filesChanged === 1 ? '' : 's'}`;
@@ -96,6 +107,15 @@ function deriveOutcome(detail: RunDetail): OutcomeShape {
   const screenshotCount = detail.browserObservations.filter(
     (o) => o.screenshotKey || o.screenshotUrl,
   ).length;
+  const localPlaywrightPassed = hasPassedLocalPlaywrightObservation(detail.browserObservations);
+  const ignoredRemoteFailures = detail.browserObservations.filter((observation) =>
+    isIgnoredRemoteLocalhostObservation(run.previewUrl, detail.browserObservations, observation),
+  );
+  const actionableFailures = detail.browserObservations.filter(
+    (observation) =>
+      (observation.status === 'failed' || observation.status === 'errored') &&
+      !isIgnoredRemoteLocalhostObservation(run.previewUrl, detail.browserObservations, observation),
+  );
 
   const bugSummary =
     latestHypothesis?.summary ??
@@ -106,9 +126,21 @@ function deriveOutcome(detail: RunDetail): OutcomeShape {
   const baseMeta: OutcomeShape['meta'] = [
     { label: 'Duration', value: duration },
     { label: 'Patch', value: filesLabel },
-    { label: 'Verifications', value: verificationLabel },
+    { label: 'Final checks', value: finalVerificationLabel },
     { label: 'Screenshots', value: `${screenshotCount} captured` },
   ];
+  if (evidenceFailures > 0) {
+    baseMeta.push({
+      label: 'Failure evidence',
+      value: `${evidenceFailures} captured`,
+    });
+  }
+  if (ignoredRemoteFailures.length > 0) {
+    baseMeta.push({
+      label: 'Remote env',
+      value: `${ignoredRemoteFailures.length} ignored`,
+    });
+  }
 
   // === active phases ===
   if (ACTIVE_PHASES.has(run.status)) {
@@ -191,6 +223,22 @@ function deriveOutcome(detail: RunDetail): OutcomeShape {
       icon: Wand2,
       headline: `Patch ready — ${filesLabel} changed.`,
       subhead: bugSummary,
+      meta: baseMeta,
+    };
+  }
+
+  if (
+    run.status === 'done' &&
+    !latestHypothesis &&
+    localPlaywrightPassed &&
+    ignoredRemoteFailures.length > 0 &&
+    actionableFailures.length === 0
+  ) {
+    return {
+      tone: 'success',
+      icon: CheckCircle2,
+      headline: 'Flow passed locally; remote browser could not reach localhost.',
+      subhead: `Playwright reached the success screen. ${ignoredRemoteFailures.length} TinyFish loopback check${ignoredRemoteFailures.length === 1 ? ' was' : 's were'} kept as provider reachability evidence, not a code bug.`,
       meta: baseMeta,
     };
   }

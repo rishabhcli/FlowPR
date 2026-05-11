@@ -23,6 +23,17 @@ Suspected cause: {suspected_cause}
 - Playwright trace: {trace_url}
 - Confidence: {confidence_label} ({confidence_score})
 
+## Evidence completeness
+| Evidence | Status | Detail |
+| --- | --- | --- |
+| Before screenshot | {complete_or_missing} | {url_or_reason} |
+| Playwright trace | {complete_or_missing} | {url_or_reason} |
+| After screenshot / local proof | {complete_or_missing} | {url_or_reason_or_localhost_fallback} |
+| Local verification | {complete_or_missing} | {summary} |
+| Live re-verification | {complete_or_missing} | {summary} |
+| Policy context | {complete_or_missing} | {citation_count} |
+| Guild.ai gate | {complete_or_missing} | {gate_reason} |
+
 ## What changed
 Branch: `{branch_name}`
 Commit: `{commit_sha}`
@@ -47,6 +58,9 @@ Summary: {live_summary}
 ## Governance
 - Guild.ai session: `{guild_session_id}`
 - Gate decision: **{gate_decision}** — {gate_reason}
+
+## Residual risk
+{risk_bullets_or_none}
 
 ## Rollback
 Revert this PR. No database migrations or irreversible operations are included.

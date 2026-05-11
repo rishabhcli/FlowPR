@@ -8,7 +8,7 @@ import {
   readWorkspaceFile,
   writeWorkspaceFile,
   type CloneRepoResult,
-} from '@flowpr/tools';
+} from '@flowpr/tools/repo';
 
 const REGRESSION_TEST_PATH = 'apps/demo-target/tests/checkout-mobile-regression.spec.ts';
 const PATCH_AUTHOR_NAME = 'FlowPR Autonomous Agent';
@@ -106,7 +106,7 @@ async function assertElementNotObstructed(page: Page, locator: Locator): Promise
 test.describe('FlowPR regression: mobile checkout CTA is reachable', () => {
   test('pay now button is unobstructed and completes checkout on mobile', async ({ page }) => {
     await page.goto('/');
-    await page.getByRole('link', { name: /pro/i }).click();
+    await page.getByRole('link', { name: /^pro\\b/i }).click();
 
     const payNow = page.getByRole('link', { name: /pay now/i });
     await expect(payNow).toBeVisible();
@@ -196,6 +196,7 @@ export async function generateDemoCookieBannerPatch(
       commitSha,
       diffStat,
       filesChanged,
+      testPath: plan.testPath,
     },
   };
 }

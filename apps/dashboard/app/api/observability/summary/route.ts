@@ -3,9 +3,10 @@ import {
   connectFlowPrRedisClient,
   createFlowPrRedisClient,
   listDeadLetterEntries,
-  listRecentRuns,
   listWorkerHeartbeats,
-} from '@flowpr/tools';
+} from '@flowpr/tools/redis';
+import { listRecentRuns } from '@flowpr/tools/insforge';
+import { classifyStuckRuns, isRecoverableActiveRunStatus } from '@flowpr/tools/recovery';
 import type { FlowPrRun, RunStatus } from '@flowpr/schemas';
 
 export const runtime = 'nodejs';
@@ -38,6 +39,12 @@ interface RunBuckets {
   failed24h: number;
   total24h: number;
   durations: number[];
+}
+
+interface DeadLetterEntry {
+  id: string;
+  runId?: string;
+  createdAt?: string;
 }
 
 function bucketRuns(runs: FlowPrRun[]): RunBuckets {
@@ -80,6 +87,20 @@ function bucketRuns(runs: FlowPrRun[]): RunBuckets {
   return buckets;
 }
 
+function isDeadLetterResolved(entry: DeadLetterEntry, run: FlowPrRun | undefined): boolean {
+  if (!run) return true;
+  if (run.status !== 'done' && run.status !== 'learned') return false;
+
+  const deadLetterTs = new Date(entry.createdAt ?? '').getTime();
+  const resolutionTs = new Date(run.completedAt ?? run.updatedAt ?? '').getTime();
+
+  if (!Number.isFinite(deadLetterTs) || !Number.isFinite(resolutionTs)) {
+    return true;
+  }
+
+  return resolutionTs >= deadLetterTs;
+}
+
 export async function GET() {
   const redis = createFlowPrRedisClient();
   let runs: FlowPrRun[] = [];
@@ -88,7 +109,11 @@ export async function GET() {
   let activeWorkerRunId: string | undefined;
   let activeWorkerPhase: string | undefined;
   let deadLetterCount = 0;
+  let deadLetterTotal = 0;
+  let deadLetterResolved = 0;
+  let deadLetterOrphaned = 0;
   let mostRecentDeadLetter: string | undefined;
+  let stuckRuns: ReturnType<typeof classifyStuckRuns> = [];
   let runsError: string | undefined;
   let redisError: string | undefined;
 
@@ -102,7 +127,20 @@ export async function GET() {
     await connectFlowPrRedisClient(redis);
     const heartbeats = await listWorkerHeartbeats(redis);
     const now = Date.now();
+    const runsById = new Map(runs.map((run) => [run.id, run]));
     workerCount = heartbeats.length;
+    const workerSignals = heartbeats.map((beat) => {
+      const lastBeatMs = new Date(beat.lastBeat).getTime();
+      const ageMs = Number.isFinite(lastBeatMs)
+        ? now - lastBeatMs
+        : Number.POSITIVE_INFINITY;
+      return {
+        ...beat,
+        ageMs,
+        alive: ageMs <= 30000,
+      };
+    });
+
     for (const beat of heartbeats) {
       const lastBeatMs = new Date(beat.lastBeat).getTime();
       const ageMs = Number.isFinite(lastBeatMs)
@@ -110,16 +148,43 @@ export async function GET() {
         : Number.POSITIVE_INFINITY;
       if (ageMs <= 30000) {
         workersAlive += 1;
-        if (beat.currentRunId && !activeWorkerRunId) {
+        const currentRunStatus = beat.currentRunId
+          ? runsById.get(beat.currentRunId)?.status
+          : undefined;
+        if (
+          beat.currentRunId &&
+          isRecoverableActiveRunStatus(currentRunStatus) &&
+          !activeWorkerRunId
+        ) {
           activeWorkerRunId = beat.currentRunId;
           activeWorkerPhase = beat.currentPhase;
         }
       }
     }
-    const dl = await listDeadLetterEntries(redis, 5);
-    deadLetterCount = dl.length;
-    if (dl[0]) {
-      mostRecentDeadLetter = dl[0].fields.runId ?? dl[0].id;
+
+    stuckRuns = classifyStuckRuns(runs, workerSignals, { nowMs: now });
+
+    const dl = await listDeadLetterEntries(redis, 50);
+    deadLetterTotal = dl.length;
+    for (const entry of dl) {
+      const deadLetter = {
+        id: entry.id,
+        runId: entry.fields.runId,
+        createdAt: entry.fields.createdAt,
+      };
+      const run = deadLetter.runId ? runsById.get(deadLetter.runId) : undefined;
+      if (!run) {
+        deadLetterOrphaned += 1;
+      }
+      if (isDeadLetterResolved(deadLetter, run)) {
+        deadLetterResolved += 1;
+        continue;
+      }
+
+      deadLetterCount += 1;
+      if (!mostRecentDeadLetter) {
+        mostRecentDeadLetter = deadLetter.runId ?? deadLetter.id;
+      }
     }
   } catch (error) {
     redisError = error instanceof Error ? error.message : String(error);
@@ -167,7 +232,16 @@ export async function GET() {
     },
     deadLetter: {
       count: deadLetterCount,
+      total: deadLetterTotal,
+      resolved: deadLetterResolved,
+      orphaned: deadLetterOrphaned,
       mostRecentRunId: mostRecentDeadLetter,
+    },
+    recovery: {
+      stuckCount: stuckRuns.length,
+      stuckRuns: stuckRuns.slice(0, 5),
+      oldestStuckRunId: stuckRuns[0]?.id,
+      actionSummary: stuckRuns[0]?.nextAction,
     },
     redisError,
   });

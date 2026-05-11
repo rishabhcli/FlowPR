@@ -28,7 +28,7 @@ export const runStatusLabels: Record<RunStatus, string> = {
   creating_pr: 'Opening pull request',
   publishing_artifacts: 'Saving evidence',
   learned: 'Remembering',
-  done: 'PR ready',
+  done: 'Run complete',
   failed: 'Needs review',
 };
 
@@ -47,9 +47,18 @@ export const runStatusDescriptions: Record<RunStatus, string> = {
   creating_pr: 'FlowPR is opening a pull request on GitHub with the evidence packet.',
   publishing_artifacts: 'FlowPR is saving the run evidence.',
   learned: 'FlowPR is remembering this pattern for future runs.',
-  done: 'The pull request is ready for review.',
+  done: 'FlowPR finished this run. Review the evidence, patch, and PR sections for the outcome.',
   failed: 'FlowPR could not finish safely. The run is ready for a human to review.',
 };
+
+export function normalizeRunOutcomeCopy(value: string): string {
+  return value
+    .replace('Moving on to PR ready.', 'Moving on to Run complete.')
+    .replace(
+      'Run finished. The pull request is ready for review.',
+      'Run finished. Review the evidence, patch, and PR sections for the outcome.',
+    );
+}
 
 export const browserObservationStatusLabels: Record<BrowserObservationStatus, string> = {
   queued: 'Pending',

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { listRecentRuns } from '@flowpr/tools';
+import { listRecentRuns } from '@flowpr/tools/insforge';
 
 export const runtime = 'nodejs';
 

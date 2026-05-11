@@ -5,6 +5,27 @@
   "successCondition": "Keyboard focus reaches Pay now and activates it.",
   "riskLevel": "high",
   "viewport": { "width": 1024, "height": 768 },
+  "expectedEvidence": {
+    "providers": ["playwright"],
+    "artifacts": ["keyboard step trace", "focused element sequence", "screenshot"],
+    "signals": [
+      "Tab order does not expose Pay now before the patch",
+      "Keyboard activation reaches /success after the patch"
+    ]
+  },
+  "expectedDiagnosis": {
+    "bugType": "blocked_cta",
+    "severity": "high",
+    "likelyFiles": ["apps/demo-target/app/checkout/page.tsx"]
+  },
+  "expectedPatch": {
+    "filesChanged": ["apps/demo-target/app/checkout/page.tsx"]
+  },
+  "verification": {
+    "command": "pnpm benchmark:fixtures",
+    "testName": "keyboard-focus-trap: keyboard focus reaches Pay now and activates checkout",
+    "successCondition": "Keyboard-only checkout can focus and activate Pay now."
+  },
   "fixtures": {
     "previewUrl": "http://localhost:3100/checkout?plan=pro",
     "expectedFilesChanged": ["apps/demo-target/app/checkout/page.tsx"]

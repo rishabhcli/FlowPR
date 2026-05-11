@@ -5,6 +5,27 @@
   "successCondition": "No 404/500 responses observed during checkout submission.",
   "riskLevel": "high",
   "viewport": { "width": 390, "height": 844 },
+  "expectedEvidence": {
+    "providers": ["tinyfish", "playwright"],
+    "artifacts": ["network failure list", "mobile screenshot", "playwright trace"],
+    "signals": [
+      "Checkout submission records a 404 or 500 network response before the patch",
+      "Checkout submission has no 4xx/5xx response after the patch"
+    ]
+  },
+  "expectedDiagnosis": {
+    "bugType": "network_error",
+    "severity": "high",
+    "likelyFiles": ["apps/demo-target/app/api/checkout/route.ts"]
+  },
+  "expectedPatch": {
+    "filesChanged": ["apps/demo-target/app/api/checkout/route.ts"]
+  },
+  "verification": {
+    "command": "pnpm benchmark:fixtures",
+    "testName": "api-route-404: checkout API accepts Pro checkout submissions",
+    "successCondition": "No 404/500 responses observed during checkout submission."
+  },
   "fixtures": {
     "previewUrl": "http://localhost:3100",
     "expectedFilesChanged": ["apps/demo-target/app/api/checkout/route.ts"]

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { listRecentRuns, listTimelineEvents } from '@flowpr/tools';
+import { listRecentRuns, listTimelineEvents } from '@flowpr/tools/insforge';
 import type { FlowPrRun, TimelineEvent } from '@flowpr/schemas';
 
 export const runtime = 'nodejs';

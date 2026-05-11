@@ -1,9 +1,10 @@
 import {
   createGitHubPullRequest,
   findOpenPullRequestForHead,
-  pushBranch,
   type PullRequestSummary,
-} from '@flowpr/tools';
+} from '@flowpr/tools/github';
+import { pushBranch } from '@flowpr/tools/repo';
+import { isLocalPreviewUrl } from '@flowpr/schemas';
 import type { TriageOutput } from './visual-triage';
 import type { GenerateDemoPatchResult } from './patcher';
 import type { LocalVerificationResult } from './verifier';
@@ -72,6 +73,72 @@ function renderLiveVerification(result: LiveVerificationResult | undefined): str
   return `Status: **${result.status}**\nAttempts: ${result.attempts}\nSummary: ${result.summary}`;
 }
 
+function hasLocalProofFallback(input: PullRequestContextInput): boolean {
+  return !input.afterScreenshotUrl
+    && isLocalPreviewUrl(input.previewUrl)
+    && input.localVerification.overallStatus === 'passed'
+    && input.liveVerification?.status === 'passed';
+}
+
+function renderEvidenceChecklist(input: PullRequestContextInput): string {
+  const localProofFallback = hasLocalProofFallback(input);
+  const afterProofDetail = input.afterScreenshotUrl ?? (
+    localProofFallback
+      ? `Localhost live verification used local proof fallback: ${input.liveVerification?.summary}`
+      : undefined
+  );
+  const checks = [
+    { label: 'Before screenshot', complete: Boolean(input.beforeScreenshotUrl), detail: input.beforeScreenshotUrl },
+    { label: 'Playwright trace', complete: Boolean(input.traceUrl), detail: input.traceUrl },
+    { label: 'After screenshot / local proof', complete: Boolean(input.afterScreenshotUrl) || localProofFallback, detail: afterProofDetail },
+    { label: 'Local verification', complete: input.localVerification.overallStatus === 'passed', detail: input.localVerification.summary },
+    { label: 'Live re-verification', complete: input.liveVerification?.status === 'passed', detail: input.liveVerification?.summary },
+    { label: 'Policy context', complete: input.policyCitations.length > 0, detail: `${input.policyCitations.length} citation(s)` },
+    { label: 'Guild.ai gate', complete: Boolean(input.gateDecision), detail: input.gateDecision?.reason },
+  ];
+
+  return [
+    '| Evidence | Status | Detail |',
+    '| --- | --- | --- |',
+    ...checks.map((check) => `| ${check.label} | ${check.complete ? 'complete' : 'missing'} | ${check.detail ?? 'not recorded'} |`),
+  ].join('\n');
+}
+
+function renderResidualRisk(input: PullRequestContextInput): string {
+  const risks: string[] = [];
+  const localProofFallback = hasLocalProofFallback(input);
+
+  if (input.localVerification.overallStatus !== 'passed') {
+    risks.push(`Local verification is ${input.localVerification.overallStatus}; review command output before merging.`);
+  }
+
+  if (input.liveVerification?.status !== 'passed') {
+    risks.push(input.liveVerification
+      ? `Live re-verification is ${input.liveVerification.status}; treat this PR as draft evidence.`
+      : 'Live re-verification was not executed; browser proof is incomplete.');
+  }
+
+  if (!input.beforeScreenshotUrl || (!input.afterScreenshotUrl && !localProofFallback)) {
+    risks.push('Before/after screenshot pair is incomplete.');
+  }
+
+  if (!input.gateDecision) {
+    risks.push('Guild.ai action gate metadata was not recorded.');
+  } else if (input.gateDecision.requiresApproval) {
+    risks.push('Guild.ai marked this action as requiring approval.');
+  }
+
+  if (input.draft) {
+    risks.push('PR was opened as a draft because permissions or verification did not allow a ready-for-review PR.');
+  }
+
+  if (risks.length === 0) {
+    return 'No residual risks were detected by FlowPR from the recorded evidence.';
+  }
+
+  return risks.map((risk) => `- ${risk}`).join('\n');
+}
+
 export function renderPullRequestBody(input: PullRequestContextInput): string {
   return `# FlowPR fix: ${input.triage.bugType.replace(/_/g, ' ')}
 
@@ -92,6 +159,9 @@ Suspected cause: ${input.triage.suspectedCause}
 - Before screenshot: ${input.beforeScreenshotUrl ? `[screenshot](${input.beforeScreenshotUrl})` : '_not captured_'}
 - Playwright trace: ${input.traceUrl ? `[trace](${input.traceUrl})` : '_not captured_'}
 - Confidence: ${input.triage.confidence} (${Math.round(input.triage.confidenceScore * 100)}%)
+
+## Evidence completeness
+${renderEvidenceChecklist(input)}
 
 ## What changed
 Branch: \`${input.patch.plan.branchName}\`
@@ -118,6 +188,9 @@ ${renderPolicySection(input.policyCitations)}
 - Guild.ai session: ${input.guildSessionId ? `\`${input.guildSessionId}\`` : '_unscoped_'}
 - Gate decision: ${input.gateDecision ? `**${input.gateDecision.decision}** — ${input.gateDecision.reason}` : '_n/a_'}
 - Trace: ${input.guildSessionTraceUrl ?? '_local trace only_'}
+
+## Residual risk
+${renderResidualRisk(input)}
 
 ## Rollback
 Revert this PR. No database migrations or irreversible operations are included.

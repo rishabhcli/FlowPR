@@ -1,22 +1,28 @@
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  getMissingRecommendedEnv,
+  getMissingRequiredEnv,
+  loadLocalEnv,
+} from '@flowpr/tools/env';
+import {
+  appendTimelineEvent,
+  recordProviderArtifact,
+  updateAgentSessionsForRun,
+  updateRunStatus,
+} from '@flowpr/tools/insforge';
 import {
   ackEvent,
-  appendTimelineEvent,
   claimStaleEvents,
   connectFlowPrRedisClient,
   createFlowPrRedisClient,
   ensureFlowPrConsumerGroups,
-  getMissingRecommendedEnv,
-  getMissingRequiredEnv,
-  loadLocalEnv,
   moveToDeadLetter,
   readRunEvents,
-  recordProviderArtifact,
   retryRedisEvent,
-  updateAgentSessionsForRun,
-  updateRunStatus,
   writeWorkerHeartbeat,
   type FlowPrRedisEvent,
-} from '@flowpr/tools';
+} from '@flowpr/tools/redis';
 import { describeRedisEventFailure, processRedisEvent } from './state-machine';
 
 const maxAttempts = 3;
@@ -143,7 +149,16 @@ async function handleWorkerFailure(redis: ReturnType<typeof createFlowPrRedisCli
   }));
 }
 
-async function main() {
+function isDirectWorkerExecution(): boolean {
+  const workerPath = fileURLToPath(import.meta.url);
+
+  return process.argv.slice(1).some((arg) => {
+    if (!/\.[cm]?[jt]s$/.test(arg)) return false;
+    return resolve(arg) === workerPath;
+  });
+}
+
+export async function main() {
   loadLocalEnv();
   const missing = getMissingRequiredEnv();
   const recommended = getMissingRecommendedEnv();
@@ -230,7 +245,9 @@ async function main() {
   }
 }
 
-main().catch((error: unknown) => {
-  console.error(getErrorMessage(error));
-  process.exitCode = 1;
-});
+if (isDirectWorkerExecution()) {
+  main().catch((error: unknown) => {
+    console.error(getErrorMessage(error));
+    process.exitCode = 1;
+  });
+}

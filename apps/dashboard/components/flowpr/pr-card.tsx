@@ -1,9 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import { ArrowUpRight, CheckCircle2, GitMerge, GitPullRequest, Loader2 } from 'lucide-react';
+import { ArrowUpRight, CheckCircle2, GitMerge, GitPullRequest, Loader2, ShieldAlert } from 'lucide-react';
 import type { PullRequestRecord } from '@flowpr/schemas';
-import { labelPullRequestStatus } from '@flowpr/schemas';
+import { isBlockedPullRequestAttempt, labelPullRequestStatus } from '@flowpr/schemas';
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -23,6 +23,11 @@ export function PrCard({ pullRequest, runId, className, onMerged }: PrCardProps)
   const [mergedNow, setMergedNow] = useState(false);
 
   const isMerged = pullRequest?.status === 'merged' || mergedNow;
+  const blockedAttempt = pullRequest ? isBlockedPullRequestAttempt(pullRequest) : false;
+  const gate = (pullRequest?.raw?.gate ?? {}) as { reason?: unknown; permissionProfile?: unknown };
+  const gateReason = typeof gate.reason === 'string' ? gate.reason : undefined;
+  const gateProfile = typeof gate.permissionProfile === 'string' ? gate.permissionProfile : undefined;
+  const shouldShowGateProfile = Boolean(gateProfile && !gateReason?.includes(gateProfile));
   const canMerge = Boolean(
     pullRequest && pullRequest.url && pullRequest.number != null && !isMerged && pullRequest.status !== 'closed' && pullRequest.status !== 'failed',
   );
@@ -107,6 +112,18 @@ export function PrCard({ pullRequest, runId, className, onMerged }: PrCardProps)
         </div>
       </CardHeader>
       <CardContent className="space-y-2">
+        {blockedAttempt && (
+          <div className="rounded-md border border-warning/35 bg-warning/10 p-3 text-xs text-warning-foreground">
+            <p className="flex items-center gap-1.5 font-medium text-foreground">
+              <ShieldAlert className="h-3.5 w-3.5 text-warning" />
+              No GitHub pull request was opened.
+            </p>
+            <p className="mt-1 text-muted-foreground">
+              {gateReason ?? 'FlowPR stopped at the action gate before contacting GitHub.'}
+              {shouldShowGateProfile ? ` Profile: ${gateProfile}.` : ''}
+            </p>
+          </div>
+        )}
         {pullRequest.url && (
           <div className="flex flex-col gap-2 sm:flex-row">
             {isMerged ? (

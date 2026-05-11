@@ -1,4 +1,3 @@
-import { createClient } from '@insforge/sdk';
 import { getInsForgeClient, getInsForgeConfig } from './insforge';
 import { hasGitHubAppCredentials, hasGitHubCredentials } from './github';
 import { loadLocalEnv } from './env';
@@ -58,7 +57,8 @@ export interface GitHubConnectionStatus {
   };
 }
 
-function createInsForgeServerClient() {
+async function createInsForgeServerClient() {
+  const { createClient } = await import('@insforge/sdk');
   return createClient({
     ...getInsForgeConfig(),
     isServerMode: true,
@@ -103,7 +103,7 @@ function getOAuthUserId(user: unknown): string | undefined {
 }
 
 export async function startGitHubOAuth(redirectTo: string): Promise<GitHubOAuthStart> {
-  const client = createInsForgeServerClient();
+  const client = await createInsForgeServerClient();
   const { data, error } = await client.auth.signInWithOAuth({
     provider: 'github',
     redirectTo,
@@ -128,7 +128,7 @@ export async function completeGitHubOAuth(input: {
   code: string;
   codeVerifier: string;
 }): Promise<GitHubConnection> {
-  const authClient = createInsForgeServerClient();
+  const authClient = await createInsForgeServerClient();
   const { data, error } = await authClient.auth.exchangeOAuthCode(
     input.code,
     input.codeVerifier,

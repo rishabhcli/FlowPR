@@ -9,4 +9,4 @@ export {
   type TinyFishAgentFlowResult,
   type TinyFishBrowserObservation,
   type TinyFishProgressEvent,
-} from '@flowpr/tools';
+} from '@flowpr/tools/tinyfish';

@@ -55,6 +55,29 @@ function normalizeBaseUrl(value: string): string {
   return value.replace(/\/+$/, '');
 }
 
+function parsedUrl(value: string): URL | undefined {
+  try {
+    return new URL(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function urlPathMatches(value: string, pattern: RegExp): boolean {
+  const parsed = parsedUrl(value);
+  const path = parsed?.pathname ?? value;
+
+  return pattern.test(path);
+}
+
+function isCheckoutUrl(value: string): boolean {
+  return urlPathMatches(value, /checkout|payment|billing/i);
+}
+
+function isSuccessUrl(value: string): boolean {
+  return /success|complete|confirmation|thank/i.test(value);
+}
+
 async function firstVisible(candidates: Locator[]): Promise<Locator | undefined> {
   for (const candidate of candidates) {
     const count = await candidate.count().catch(() => 0);
@@ -69,6 +92,33 @@ async function firstVisible(candidates: Locator[]): Promise<Locator | undefined>
   }
 
   return undefined;
+}
+
+async function waitForPageSettled(page: Page): Promise<void> {
+  await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => undefined);
+  await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => undefined);
+}
+
+async function waitForSuccessState(page: Page): Promise<void> {
+  await Promise.race([
+    page.waitForURL(/success|complete|confirmation|thank/i, { timeout: 10000 }).catch(() => undefined),
+    page.getByText(/success|complete|confirmed|thank you/i).first().waitFor({ state: 'visible', timeout: 10000 }).catch(() => undefined),
+  ]);
+}
+
+async function waitForCheckoutEntry(page: Page): Promise<void> {
+  await Promise.race([
+    page.waitForURL(/checkout|payment|billing/i, { timeout: 5000 }).catch(() => undefined),
+    page.getByRole('link', { name: /pay now|pay|complete checkout|checkout|purchase|submit/i })
+      .first()
+      .waitFor({ state: 'visible', timeout: 5000 })
+      .catch(() => undefined),
+    page.getByRole('button', { name: /pay now|pay|complete checkout|checkout|purchase|submit/i })
+      .first()
+      .waitFor({ state: 'visible', timeout: 5000 })
+      .catch(() => undefined),
+  ]);
+  await waitForPageSettled(page);
 }
 
 export async function assertElementNotObstructed(page: Page, locator: Locator): Promise<ObstructionCheck> {
@@ -185,20 +235,31 @@ async function exerciseFlow(page: Page, input: LocalFlowTestInput): Promise<{
   const requiresCheckout = flowIncludes(goal, [/checkout/, /pay/, /purchase/, /complete/]);
 
   await page.goto(input.previewUrl, { waitUntil: 'domcontentloaded', timeout: input.timeoutMs ?? 30000 });
-  await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => undefined);
+  await waitForPageSettled(page);
   actions.push(`goto:${input.previewUrl}`);
 
-  if (flowIncludes(goal, [/pricing/, /\bpro\b/, /plan/])) {
-    await clickIfVisible(
+  const alreadyOnCheckout = requiresCheckout && isCheckoutUrl(page.url());
+  const alreadyOnSuccess = isSuccessUrl(page.url());
+
+  if (flowIncludes(goal, [/pricing/, /\bpro\b/, /plan/]) && !alreadyOnCheckout && !alreadyOnSuccess) {
+    const clickedPlan = await clickIfVisible(
       page,
       [
-        page.getByRole('link', { name: /pro/i }),
-        page.getByRole('button', { name: /pro/i }),
-        page.getByText(/^pro\b/i),
+        page.locator('a[href*="plan=pro"], a[href*="/checkout"]').filter({ hasText: /^pro\b/i }),
+        page.getByRole('link', { name: /^pro\b/i }),
+        page.getByRole('button', { name: /^pro\b/i }),
+        page.locator('a, button').filter({ hasText: /^pro\b/i }),
       ],
       'pro',
       actions,
     );
+
+    if (clickedPlan && requiresCheckout) {
+      await waitForCheckoutEntry(page);
+      actions.push('waited:checkout_entry');
+    }
+  } else if (alreadyOnCheckout) {
+    actions.push('skipped:plan_already_on_checkout');
   }
 
   if (flowIncludes(goal, [/signup/, /sign up/, /register/])) {
@@ -215,8 +276,10 @@ async function exerciseFlow(page: Page, input: LocalFlowTestInput): Promise<{
 
   if (requiresCheckout) {
     const paymentTarget = await firstVisible([
+      page.locator('a[href*="/success"], button[data-testid*="pay"], a[data-testid*="pay"]'),
       page.getByRole('button', { name: /pay now|pay|complete checkout|checkout|purchase|submit/i }),
       page.getByRole('link', { name: /pay now|pay|complete checkout|checkout|purchase|submit/i }),
+      page.locator('a, button').filter({ hasText: /pay now|complete checkout|checkout|purchase|submit/i }),
     ]);
 
     if (!paymentTarget) {
@@ -245,8 +308,9 @@ async function exerciseFlow(page: Page, input: LocalFlowTestInput): Promise<{
 
       if (accepted) {
         await paymentTarget.click({ timeout: 10000 }).catch(() => undefined);
-        await page.waitForLoadState('domcontentloaded').catch(() => undefined);
-        recoveryPassed = /success|complete|confirmation|thank/i.test(page.url());
+        await waitForSuccessState(page);
+        await waitForPageSettled(page);
+        recoveryPassed = isSuccessUrl(page.url());
       }
 
       return {
@@ -263,7 +327,8 @@ async function exerciseFlow(page: Page, input: LocalFlowTestInput): Promise<{
 
     await paymentTarget.click({ timeout: 10000 });
     actions.push('clicked:checkout_submit');
-    await page.waitForLoadState('domcontentloaded').catch(() => undefined);
+    await waitForSuccessState(page);
+    await waitForPageSettled(page);
   }
 
   const finalUrl = page.url();

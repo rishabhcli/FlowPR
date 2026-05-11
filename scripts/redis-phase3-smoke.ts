@@ -10,8 +10,10 @@ import {
   lookupBugSignatureMemory,
   redisLockKeys,
   releaseRedisLock,
+  redisWorkerKeys,
   storeBugSignatureMemory,
-} from '@flowpr/tools';
+  writeWorkerHeartbeat,
+} from '@flowpr/tools/redis';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -58,6 +60,25 @@ async function main() {
     }, 300);
     const memory = await lookupBugSignatureMemory(redis, hash);
     assert(memory.runId === 'phase3-smoke', 'Redis bug-signature memory did not round-trip');
+
+    const workerId = `phase3-smoke-${process.pid}`;
+    const heartbeatKey = redisWorkerKeys.heartbeat(workerId);
+    await writeWorkerHeartbeat(redis, {
+      workerId,
+      pid: process.pid,
+      processed: 1,
+      currentRunId: 'phase3-smoke-run',
+      currentPhase: 'running_browser_qa',
+    }, 60);
+    await writeWorkerHeartbeat(redis, {
+      workerId,
+      pid: process.pid,
+      processed: 1,
+    }, 60);
+    const heartbeat = await redis.hGetAll(heartbeatKey);
+    assert(!heartbeat.currentRunId, 'Idle worker heartbeat kept stale currentRunId');
+    assert(!heartbeat.currentPhase, 'Idle worker heartbeat kept stale currentPhase');
+    await redis.del(heartbeatKey);
 
     console.log(JSON.stringify({
       ok: true,

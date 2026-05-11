@@ -1,4 +1,4 @@
-import { runAgentFlow, type TinyFishAgentFlowResult } from '@flowpr/tools';
+import { runAgentFlow, type TinyFishAgentFlowResult } from '@flowpr/tools/tinyfish';
 
 export type LiveVerificationStatus = 'passed' | 'failed' | 'errored' | 'skipped';
 
@@ -8,6 +8,7 @@ export interface LiveVerificationInput {
   flowGoal: string;
   maxAttempts?: number;
   skip?: boolean;
+  skipReason?: string;
   label?: string;
 }
 
@@ -28,7 +29,7 @@ export async function runLiveVerification(input: LiveVerificationInput): Promise
     return {
       status: 'skipped',
       attempts: 0,
-      summary: 'Live verification intentionally skipped.',
+      summary: input.skipReason ?? 'Live verification intentionally skipped.',
     };
   }
 

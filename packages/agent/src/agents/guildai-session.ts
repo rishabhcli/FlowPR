@@ -12,7 +12,7 @@ import {
   type GuildSessionCompletionInput,
   type GuildSessionSummary,
   type GuildToolCallInput,
-} from '@flowpr/tools';
+} from '@flowpr/tools/guildai';
 
 export type {
   GuildActionGateDecision,

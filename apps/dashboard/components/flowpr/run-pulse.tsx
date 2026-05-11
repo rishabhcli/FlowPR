@@ -13,7 +13,12 @@ import {
   Radio,
 } from 'lucide-react';
 import type { RunDetail } from '@flowpr/schemas';
-import { labelRiskLevel, labelRunStatus } from '@flowpr/schemas';
+import {
+  hasPassedLocalPlaywrightObservation,
+  isIgnoredRemoteLocalhostObservation,
+  labelRiskLevel,
+  labelRunStatus,
+} from '@flowpr/schemas';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
@@ -97,13 +102,28 @@ export function RunPulse({
 
   const tinyfishLive = liveStreams.find((entry) => entry.provider === 'tinyfish');
   const liveActive = Boolean(tinyfishLive);
+  const localPlaywrightPassed = hasPassedLocalPlaywrightObservation(detail.browserObservations);
+  const isIgnoredObservation = (obs: (typeof detail.browserObservations)[number]) =>
+    isIgnoredRemoteLocalhostObservation(run.previewUrl, detail.browserObservations, obs);
+  const ignoredRemoteObservation = detail.browserObservations.find(
+    (obs) => isIgnoredObservation(obs) && (obs.screenshotKey || obs.screenshotUrl),
+  );
+  const environmentOnlyRun =
+    localPlaywrightPassed &&
+    detail.browserObservations.some(isIgnoredObservation) &&
+    !detail.bugHypotheses.length &&
+    !latestPatch;
 
   const failingObservation =
     detail.browserObservations.find(
       (obs) =>
         (obs.status === 'failed' || obs.status === 'errored') &&
+        !isIgnoredObservation(obs) &&
         (obs.screenshotKey || obs.screenshotUrl),
-    ) ?? detail.browserObservations.find((obs) => obs.status === 'failed');
+    ) ??
+    (environmentOnlyRun
+      ? ignoredRemoteObservation
+      : detail.browserObservations.find((obs) => obs.status === 'failed' && !isIgnoredObservation(obs)));
   const passingObservation =
     detail.browserObservations.find(
       (obs) => obs.status === 'passed' && (obs.screenshotKey || obs.screenshotUrl),
@@ -192,18 +212,22 @@ export function RunPulse({
 
       <CardContent className="grid gap-4 p-5 md:grid-cols-2">
         <PulseScreenshot
-          label="Before"
-          tone="danger"
+          label={environmentOnlyRun ? 'Remote' : 'Before'}
+          tone={environmentOnlyRun ? 'warning' : 'danger'}
           src={beforeUrl}
-          caption={failingObservation?.failedStep ?? 'Failure reproduction'}
-          fallback="Awaiting failing screenshot…"
+          caption={
+            environmentOnlyRun
+              ? 'Provider could not reach localhost'
+              : failingObservation?.failedStep ?? 'Failure reproduction'
+          }
+          fallback={environmentOnlyRun ? 'No remote reachability screenshot…' : 'Awaiting failing screenshot…'}
         />
         <PulseScreenshot
-          label="After"
+          label={environmentOnlyRun ? 'Local' : 'After'}
           tone="success"
           src={afterUrl}
-          caption="Verified fix"
-          fallback="Awaiting verified screenshot…"
+          caption={environmentOnlyRun ? 'Playwright reached success' : 'Verified fix'}
+          fallback={environmentOnlyRun ? 'Awaiting local proof…' : 'Awaiting verified screenshot…'}
           liveStreamUrl={
             !afterUrl && liveActive ? tinyfishLive?.streamingUrl : undefined
           }
@@ -319,7 +343,7 @@ function PulseScreenshot({
   liveStreamUrl,
 }: {
   label: string;
-  tone: 'danger' | 'success';
+  tone: 'danger' | 'success' | 'warning';
   src?: string;
   caption: string;
   fallback: string;
@@ -328,9 +352,15 @@ function PulseScreenshot({
   const accent =
     tone === 'danger'
       ? 'border-destructive/40 bg-destructive/5'
-      : 'border-success/40 bg-success/5';
+      : tone === 'warning'
+        ? 'border-warning/40 bg-warning/5'
+        : 'border-success/40 bg-success/5';
   const labelTone =
-    tone === 'danger' ? 'text-destructive' : 'text-success';
+    tone === 'danger'
+      ? 'text-destructive'
+      : tone === 'warning'
+        ? 'text-warning'
+        : 'text-success';
 
   return (
     <figure

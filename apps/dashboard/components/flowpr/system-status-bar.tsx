@@ -107,6 +107,12 @@ export function SystemStatusBar({
   ] as const;
 
   const hasDeadLetter = data.deadLetter.count > 0;
+  const resolvedDeadLetters = data.deadLetter.resolved ?? 0;
+  const orphanedDeadLetters = data.deadLetter.orphaned ?? 0;
+  const stuckCount = data.recovery?.stuckCount ?? 0;
+  const stuckHref = data.recovery?.oldestStuckRunId
+    ? `/runs/${data.recovery.oldestStuckRunId}`
+    : '/health';
 
   return (
     <div
@@ -131,6 +137,20 @@ export function SystemStatusBar({
         </Link>
       ))}
 
+      {stuckCount > 0 && (
+        <Link
+          href={stuckHref}
+          title={data.recovery?.actionSummary ?? 'A run has stopped advancing and needs recovery.'}
+          className={cn(
+            'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors',
+            pillTone('danger'),
+          )}
+        >
+          <AlertTriangle className="h-3 w-3" />
+          {stuckCount} stuck
+        </Link>
+      )}
+
       {hasDeadLetter && (
         <Link
           href={
@@ -138,7 +158,11 @@ export function SystemStatusBar({
               ? `/runs/${data.deadLetter.mostRecentRunId}`
               : '/health'
           }
-          title="Dead-lettered events need review"
+          title={
+            resolvedDeadLetters > 0
+              ? `${data.deadLetter.count} unresolved dead-letter events; ${resolvedDeadLetters} historical events already resolved${orphanedDeadLetters > 0 ? `, including ${orphanedDeadLetters} orphaned` : ''}`
+              : 'Dead-lettered events need review'
+          }
           className={cn(
             'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors',
             pillTone(dlTone),

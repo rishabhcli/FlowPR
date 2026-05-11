@@ -20,7 +20,7 @@ import {
   Waypoints,
   Wrench,
 } from 'lucide-react';
-import type { TimelineActor, TimelineEvent } from '@flowpr/schemas';
+import { normalizeRunOutcomeCopy, type TimelineActor, type TimelineEvent } from '@flowpr/schemas';
 
 import { cn } from '@/lib/utils';
 import { formatTime } from '@/lib/format';
@@ -83,6 +83,8 @@ function TimelineRow({ event, compact }: { event: TimelineEvent; compact: boolea
   const Icon = actorIcon[event.actor] ?? Activity;
   const tone = statusToTone(event.status);
   const hasDetail = Boolean(event.detail) || Object.keys(event.data ?? {}).length > 0;
+  const title = normalizeRunOutcomeCopy(event.title);
+  const detail = event.detail ? normalizeRunOutcomeCopy(event.detail) : undefined;
 
   return (
     <li className="animate-fade-in">
@@ -104,7 +106,7 @@ function TimelineRow({ event, compact }: { event: TimelineEvent; compact: boolea
 
         <div className="min-w-0 flex-1 pb-2">
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-            <span className="text-sm font-medium text-foreground">{event.title}</span>
+            <span className="text-sm font-medium text-foreground">{title}</span>
             <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
               {event.actor}
             </span>
@@ -113,8 +115,8 @@ function TimelineRow({ event, compact }: { event: TimelineEvent; compact: boolea
             </span>
           </div>
 
-          {event.detail && !compact && (
-            <p className="mt-0.5 text-xs text-muted-foreground">{event.detail}</p>
+          {detail && !compact && (
+            <p className="mt-0.5 text-xs text-muted-foreground">{detail}</p>
           )}
 
           <div className="mt-1 flex items-center gap-2">

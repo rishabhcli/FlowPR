@@ -6,12 +6,12 @@ import {
   createBranch,
   diffStatAgainstBase,
   listChangedFiles,
-  loadLocalEnv,
   readWorkspaceFile,
   runCommand,
   writeWorkspaceFile,
   type CloneRepoResult,
-} from '@flowpr/tools';
+} from '@flowpr/tools/repo';
+import { loadLocalEnv } from '@flowpr/tools/env';
 import type { TriageOutput } from './visual-triage';
 import type { GenerateDemoPatchResult, PatchPlan, PatchPlanFile } from './patcher';
 
@@ -471,6 +471,7 @@ export async function generateLlmPatch(input: GenerateLlmPatchInput): Promise<Ge
       provider: 'anthropic',
       model: MODEL_ID,
       explanation: plan.explanation,
+      testPath: plan.testPath,
     },
   };
 }

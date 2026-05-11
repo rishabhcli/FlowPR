@@ -14,7 +14,27 @@ export interface ReadinessItem {
   description: string;
   state: 'ready' | 'partial' | 'missing';
   found?: number;
+  issueCount?: number;
+  dangerCount?: number;
+  warningCount?: number;
+  note?: string;
   latest?: { providerId?: string; url?: string; createdAt: string };
+}
+
+export interface EvidenceIntegritySummary {
+  state: 'ready' | 'partial' | 'missing';
+  issueCount: number;
+  dangerCount: number;
+  warningCount: number;
+  issues: Array<{
+    id: string;
+    severity: 'warning' | 'danger';
+    kind: string;
+    recordId: string;
+    provider: string;
+    message: string;
+    expectedArtifact: string;
+  }>;
 }
 
 export interface ReadinessSummary {
@@ -23,6 +43,7 @@ export interface ReadinessSummary {
   partialCount?: number;
   missingCount: number;
   items: ReadinessItem[];
+  evidenceIntegrity?: EvidenceIntegritySummary;
 }
 
 interface ReadinessMeterProps {
@@ -38,11 +59,21 @@ export function ReadinessMeter({ readiness, className }: ReadinessMeterProps) {
 
   const readyPct = total === 0 ? 0 : (ready / total) * 100;
   const partialPct = total === 0 ? 0 : (partial / total) * 100;
+  const evidenceIntegrity = readiness?.evidenceIntegrity;
+  const evidenceIntegrityLabel = evidenceIntegrity
+    ? evidenceIntegrity.issueCount === 0
+      ? 'Clean'
+      : evidenceIntegrity.dangerCount > 0
+        ? 'Needs review'
+        : 'Warning'
+    : undefined;
 
   const grouped = useMemo(() => {
-    if (!readiness) return { ready: [], partial: [], missing: [] };
+    if (!readiness) return { ready: [], contextualReady: [], partial: [], missing: [] };
+    const readyItems = readiness.items.filter((i) => i.state === 'ready');
     return {
-      ready: readiness.items.filter((i) => i.state === 'ready'),
+      ready: readyItems.filter((i) => !i.note),
+      contextualReady: readyItems.filter((i) => Boolean(i.note)),
       partial: readiness.items.filter((i) => i.state === 'partial'),
       missing: readiness.items.filter((i) => i.state === 'missing'),
     };
@@ -81,8 +112,26 @@ export function ReadinessMeter({ readiness, className }: ReadinessMeterProps) {
           <Legend tone="danger" label="Missing" count={missing} />
         </div>
 
+        {evidenceIntegrity && (
+          <div className="rounded-md border border-border bg-card/40 px-3 py-2 text-xs">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-medium text-foreground">Evidence integrity</span>
+              <StateBadge
+                state={evidenceIntegrity.state}
+                label={evidenceIntegrityLabel}
+                className="shrink-0"
+              />
+            </div>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              {evidenceIntegrity.issueCount === 0
+                ? 'Every evidence claim has durable provider proof.'
+                : `${evidenceIntegrity.dangerCount} critical · ${evidenceIntegrity.warningCount} warning`}
+            </p>
+          </div>
+        )}
+
         <div className="space-y-2 pt-1">
-          {[...grouped.missing, ...grouped.partial, ...grouped.ready].slice(0, 8).map((item) => (
+          {[...grouped.missing, ...grouped.partial, ...grouped.contextualReady, ...grouped.ready].slice(0, 8).map((item) => (
             <ReadinessRow key={`${item.sponsor}-${item.artifactType}`} item={item} />
           ))}
           {!readiness && (
@@ -129,6 +178,16 @@ function ReadinessRow({ item }: { item: ReadinessItem }) {
           <span className="truncate text-muted-foreground">{item.artifactType}</span>
         </div>
         <p className="text-[11px] text-muted-foreground/80">{item.description}</p>
+        {typeof item.issueCount === 'number' && item.issueCount > 0 && (
+          <p className="mt-0.5 text-[10px] uppercase tracking-wide text-muted-foreground/70">
+            {item.dangerCount ?? 0} critical · {item.warningCount ?? 0} warning
+          </p>
+        )}
+        {item.note && (
+          <p className="mt-0.5 text-[10px] uppercase tracking-wide text-muted-foreground/70">
+            {item.note}
+          </p>
+        )}
         {item.latest?.createdAt && (
           <p className="mt-0.5 text-[10px] uppercase tracking-wide text-muted-foreground/60">
             {formatRelativeTime(item.latest.createdAt)}

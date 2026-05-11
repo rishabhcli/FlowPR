@@ -1,33 +1,24 @@
 import type { RedisClientType } from 'redis';
-import type { BrowserObservation, BrowserObservationResult, FlowPrRun, RunStatus } from '@flowpr/schemas';
-import { runStatusLabels } from '@flowpr/schemas';
+import type { BrowserObservation, BrowserObservationResult, FlowPrRun, PatchRecord, RunStatus } from '@flowpr/schemas';
 import {
-  acquireRedisLock,
-  appendTimelineEvent,
-  createBrowserSession,
-  completeIdempotentOperation,
-  createBugSignatureHash,
-  createSensoClient,
-  emitAgentStep,
-  emitBrowserResult,
-  emitPatchResult,
-  emitVerificationResult,
-  failIdempotentOperation,
-  flowPrStreams,
+  hasPassedLocalPlaywrightObservation,
+  isLocalPreviewUrl,
+  isRemoteLocalhostReachabilityObservation,
+  runStatusLabels,
+} from '@flowpr/schemas';
+import {
   getGitHubAuthToken,
   getGitHubRepository,
-  getRedisStreamStats,
+} from '@flowpr/tools/github';
+import {
+  appendTimelineEvent,
   getRun,
   listBrowserObservations,
   listBugHypotheses,
   listPatches,
   listPolicyHits,
   listPullRequests,
-  listRedisStreamEntries,
   listVerificationResults,
-  lookupBugSignatureMemory,
-  lookupSuccessfulPatchMemory,
-  queryPolicyContext,
   recordActionGate,
   recordAgentMemory,
   recordBenchmarkEvaluation,
@@ -38,22 +29,44 @@ import {
   recordProviderArtifact,
   recordPullRequest,
   recordVerificationResult,
+  updateAgentSessionsForRun,
+  updateRunStatus,
+  uploadRunArtifact,
+} from '@flowpr/tools/insforge';
+import {
+  acquireRedisLock,
+  completeIdempotentOperation,
+  createBugSignatureHash,
+  emitAgentStep,
+  emitBrowserResult,
+  emitPatchResult,
+  emitVerificationResult,
+  failIdempotentOperation,
+  flowPrStreams,
+  getRedisStreamStats,
+  listRedisStreamEntries,
+  lookupBugSignatureMemory,
+  lookupSuccessfulPatchMemory,
   emitProgressEvent,
   redisLockKeys,
   redisMemoryKeys,
   releaseRedisLock,
-  runAgentFlow,
   startIdempotentOperation,
   writeLiveStream,
   storeBugSignatureMemory,
   storeSuccessfulPatchMemory,
-  terminateBrowserSession,
-  updateAgentSessionsForRun,
-  updateRunStatus,
-  uploadRunArtifact,
   type FlowPrRedisEvent,
+} from '@flowpr/tools/redis';
+import {
+  createSensoClient,
+  queryPolicyContext,
+} from '@flowpr/tools/senso';
+import {
+  createBrowserSession,
+  runAgentFlow,
+  terminateBrowserSession,
   type TinyFishAgentFlowResult,
-} from '@flowpr/tools';
+} from '@flowpr/tools/tinyfish';
 import {
   runLocalFlowTest,
   runRemoteBrowserSessionEvidence,
@@ -61,6 +74,7 @@ import {
 } from '@flowpr/tools/playwright';
 import {
   diagnoseFailure,
+  pickPrimaryFailureObservation,
   policyContextFromHits,
   type BugType,
   type PolicyContext as TriagePolicyContext,
@@ -127,6 +141,29 @@ function isPhase(value: string | undefined): value is RunStatus {
 
 function latestObservation(observations: BrowserObservation[]): BrowserObservation | undefined {
   return observations[observations.length - 1];
+}
+
+function getPatchTestPath(patch: PatchRecord): string | undefined {
+  const raw = (patch.raw ?? {}) as Record<string, unknown>;
+  const directTestPath = raw.testPath;
+  if (typeof directTestPath === 'string' && directTestPath.trim()) {
+    return directTestPath.trim();
+  }
+
+  const plan = raw.plan;
+  if (plan && typeof plan === 'object') {
+    const planTestPath = (plan as { testPath?: unknown }).testPath;
+    if (typeof planTestPath === 'string' && planTestPath.trim()) {
+      return planTestPath.trim();
+    }
+  }
+
+  const testFile = patch.filesChanged.find((file) => {
+    const path = file.path;
+    return typeof path === 'string' && /\.spec\.[tj]sx?$/.test(path);
+  });
+
+  return typeof testFile?.path === 'string' ? testFile.path : undefined;
 }
 
 async function persistRedisState(
@@ -311,7 +348,7 @@ async function loadGitHubMetadata(run: FlowPrRun, event: FlowPrRedisEvent): Prom
 
 async function querySensoPolicy(run: FlowPrRun, event: FlowPrRedisEvent): Promise<void> {
   const latestObservations = await listBrowserObservations(run.id);
-  const primaryFailure = latestObservations.find((observation) => observation.status === 'failed' || observation.status === 'errored');
+  const primaryFailure = pickPrimaryFailureObservation(latestObservations, run.previewUrl);
   const failureSummary = primaryFailure?.observedBehavior;
   const queryText = [
     'FlowPR frontend QA policy request.',
@@ -427,45 +464,6 @@ function tinyFishSummary(flow: TinyFishAgentFlowResult): Record<string, unknown>
   };
 }
 
-async function recordFailureHypothesis(input: {
-  run: FlowPrRun;
-  provider: 'tinyfish' | 'playwright';
-  providerRunId?: string;
-  failedStep?: string;
-  visibleError?: string;
-  likelyRootCause?: string;
-  confidence?: number;
-  event: FlowPrRedisEvent;
-  evidence: Record<string, unknown>;
-}): Promise<void> {
-  await recordBugHypothesis({
-    runId: input.run.id,
-    summary: `${input.provider} evidence shows the requested frontend flow did not complete.`,
-    affectedFlow: input.run.flowGoal,
-    suspectedCause: input.likelyRootCause ?? input.visibleError,
-    confidence: (input.confidence ?? 0.5) >= 0.8 ? 'high' : 'medium',
-    severity: input.run.riskLevel,
-    acceptanceCriteria: [
-      {
-        text: input.run.flowGoal,
-        source: 'dashboard_input',
-      },
-      {
-        text: 'Primary CTAs must be reachable and unobstructed on mobile.',
-        source: 'technical_phase_4',
-      },
-    ],
-    evidence: {
-      provider: input.provider,
-      providerRunId: input.providerRunId,
-      failedStep: input.failedStep,
-      visibleError: input.visibleError,
-      redisStreamId: input.event.id,
-      ...input.evidence,
-    },
-  });
-}
-
 async function recordTinyFishAgentFlow(
   run: FlowPrRun,
   event: FlowPrRedisEvent,
@@ -563,23 +561,6 @@ async function recordTinyFishAgentFlow(
     },
   });
 
-  if (!flow.observation.passed) {
-    await recordFailureHypothesis({
-      run,
-      provider: 'tinyfish',
-      providerRunId: flow.providerRunId,
-      failedStep: flow.observation.failedStep,
-      visibleError: flow.observation.visibleError,
-      likelyRootCause: flow.observation.likelyRootCause,
-      confidence: flow.observation.confidence,
-      event,
-      evidence: {
-        streamingUrl: flow.streamingUrl,
-        screenshots: flow.observation.screenshots,
-        progressEvents: flow.progressEvents,
-      },
-    });
-  }
 }
 
 async function recordPlaywrightEvidence(
@@ -652,6 +633,9 @@ async function recordPlaywrightEvidence(
     result: {
       passed: result.passed,
       finalUrl: result.finalUrl,
+      visibleError: result.visibleError,
+      likelyRootCause: result.likelyRootCause,
+      domFindings: result.domFindings,
       confidence: result.confidence,
       recoveryPassed: result.recoveryPassed,
     },
@@ -679,24 +663,6 @@ async function recordPlaywrightEvidence(
     },
   });
 
-  if (!result.passed) {
-    await recordFailureHypothesis({
-      run,
-      provider: 'playwright',
-      providerRunId: `playwright:${run.id}`,
-      failedStep: result.failedStep,
-      visibleError: result.visibleError,
-      likelyRootCause: result.likelyRootCause,
-      confidence: result.confidence,
-      event,
-      evidence: {
-        screenshotUrl: result.screenshotUrl,
-        traceUrl: result.traceUrl,
-        domFindings: result.domFindings,
-        recoveryPassed: result.recoveryPassed,
-      },
-    });
-  }
 }
 
 async function recordTinyFishBrowserSessionEvidence(
@@ -1066,20 +1032,38 @@ async function handleCollectingVisualEvidence(
 async function handleTriagingFailure(redis: RedisClientType, run: FlowPrRun, event: FlowPrRedisEvent): Promise<void> {
   await updateRunStatus(run.id, 'triaging_failure');
   const observations = await listBrowserObservations(run.id);
-  const failures = observations.filter((observation) => observation.status === 'failed' || observation.status === 'errored');
+  const allFailures = observations.filter((observation) => observation.status === 'failed' || observation.status === 'errored');
+  const hasLocalPlaywrightPass = hasPassedLocalPlaywrightObservation(observations);
+  const ignoredFailures = hasLocalPlaywrightPass
+    ? allFailures.filter((observation) => isRemoteLocalhostReachabilityObservation(run.previewUrl, observation))
+    : [];
+  const ignoredFailureIds = new Set(ignoredFailures.map((observation) => observation.id));
+  const failures = allFailures.filter((observation) => !ignoredFailureIds.has(observation.id));
+  const triageObservations = observations.filter((observation) => !ignoredFailureIds.has(observation.id));
   const existingHypotheses = await listBugHypotheses(run.id);
   const policyHits = await listPolicyHits(run.id);
   const triagePolicy: TriagePolicyContext = policyContextFromHits(policyHits);
 
   if (failures.length === 0) {
-    await appendRedisTimeline(event, 'triaging_failure', 'skipped', 'The journey passed, so no failure needs triage.', {
-      observationCount: observations.length,
-    });
+    await appendRedisTimeline(
+      event,
+      'triaging_failure',
+      'skipped',
+      ignoredFailures.length > 0
+        ? 'The journey passed locally; remote browser failures were localhost reachability, so no app patch is needed.'
+        : 'The journey passed, so no failure needs triage.',
+      {
+        observationCount: observations.length,
+        ignoredFailureCount: ignoredFailures.length,
+        localPlaywrightPassed: hasLocalPlaywrightPass,
+      },
+    );
   } else {
     const triage = diagnoseFailure({
       flowGoal: run.flowGoal,
+      previewUrl: run.previewUrl,
       baselineRisk: run.riskLevel,
-      observations,
+      observations: triageObservations,
       policy: triagePolicy,
       memory: { signatureHash: '', priorBugMemory: {}, priorPatchMemory: {} },
     });
@@ -1114,6 +1098,7 @@ async function handleTriagingFailure(redis: RedisClientType, run: FlowPrRun, eve
       requestSummary: {
         observationCount: observations.length,
         failureCount: failures.length,
+        ignoredFailureCount: ignoredFailures.length,
         flowGoal: run.flowGoal,
       },
       responseSummary: {
@@ -1141,6 +1126,8 @@ async function handleTriagingFailure(redis: RedisClientType, run: FlowPrRun, eve
   await recordRedisArtifact(event, 'failure_triage', {
     observationCount: observations.length,
     failureCount: failures.length,
+    ignoredFailureCount: ignoredFailures.length,
+    allFailureCount: allFailures.length,
     existingHypothesisCount: existingHypotheses.length,
   });
   await persistRedisState(redis, event, 'triaging_failure');
@@ -1159,7 +1146,7 @@ async function handleRetrievingPolicy(redis: RedisClientType, run: FlowPrRun, ev
 async function handleSearchingMemory(redis: RedisClientType, run: FlowPrRun, event: FlowPrRedisEvent): Promise<void> {
   await updateRunStatus(run.id, 'searching_memory');
   const observations = await listBrowserObservations(run.id);
-  const latest = latestObservation(observations);
+  const latest = pickPrimaryFailureObservation(observations, run.previewUrl) ?? latestObservation(observations);
   const hypotheses = await listBugHypotheses(run.id);
   const latestHypothesis = hypotheses[hypotheses.length - 1];
   const bugType = (latestHypothesis?.evidence as Record<string, unknown> | undefined)?.bugType as string | undefined
@@ -1312,6 +1299,7 @@ async function handlePatchingCode(redis: RedisClientType, run: FlowPrRun, event:
         lockKey,
       });
       await persistRedisState(redis, event, 'patching_code', { reason: 'no-hypothesis' });
+      await emitNextStep(redis, event, 'running_local_tests', 'No diagnosis is available; local verification will be skipped.');
       return;
     }
 
@@ -1487,7 +1475,12 @@ async function handlePatchingCode(redis: RedisClientType, run: FlowPrRun, event:
         summary: patchResult.plan.explanation,
         diffStat: patchResult.diffStat as unknown as Record<string, unknown>,
         filesChanged: patchResult.plan.files as unknown as Record<string, unknown>[],
-        raw: patchResult.raw,
+        raw: {
+          ...patchResult.raw,
+          plan: patchResult.plan,
+          testPath: patchResult.plan.testPath,
+          headSha: patchResult.workspace.headSha,
+        },
       }),
     });
 
@@ -1620,8 +1613,9 @@ async function handleRunningLocalTests(redis: RedisClientType, run: FlowPrRun, e
   const verificationStart = Date.now();
   const verification = await runLocalVerification({
     dir: workspaceDir,
-    installDependencies: false,
+    installDependencies: true,
     onlyTypecheck: true,
+    targetedTestPath: getPatchTestPath(latestPatch),
   });
 
   const { result: verificationRecord, artifact: wgArtifact } = await executeSafeOperation({
@@ -1699,7 +1693,20 @@ async function handleRunningLiveVerification(
   const patches = await listPatches(run.id);
   const latestPatch = patches[patches.length - 1];
   const hasPatch = Boolean(latestPatch && latestPatch.status === 'generated');
-  const skip = !hasPatch || !process.env.TINYFISH_API_KEY;
+  const verificationResults = await listVerificationResults(run.id);
+  const localResult = verificationResults.find((result) => result.provider === 'local');
+  const localStatus = localResult?.status ?? 'skipped';
+  const localPreview = isLocalPreviewUrl(run.previewUrl);
+  const skipReason = !hasPatch
+    ? 'Live verification skipped because no generated patch is available.'
+    : !process.env.TINYFISH_API_KEY
+      ? 'Live verification skipped because TinyFish is not configured.'
+      : localPreview
+        ? localStatus === 'passed'
+          ? 'Live verification skipped because TinyFish cannot reach localhost previews and local verification passed.'
+          : `Live verification skipped because TinyFish cannot reach localhost previews and local verification is ${localStatus}.`
+        : undefined;
+  const skip = Boolean(skipReason);
 
   const liveResult = await runLiveVerification({
     runId: run.id,
@@ -1707,23 +1714,30 @@ async function handleRunningLiveVerification(
     flowGoal: run.flowGoal,
     maxAttempts: 2,
     skip,
+    skipReason,
     label: 'phase8-reverification',
   });
 
-  const verificationResults = await listVerificationResults(run.id);
-  const localResult = verificationResults.find((result) => result.provider === 'local');
-  const localStatus = localResult?.status ?? 'skipped';
+  let overallStatus: 'passed' | 'failed' | 'errored' | 'skipped';
 
-  const overallStatus: 'passed' | 'failed' | 'errored' | 'skipped' = liveResult.status === 'passed'
+  if (localStatus === 'errored') {
+    overallStatus = 'errored';
+  } else if (localStatus === 'failed') {
+    overallStatus = 'failed';
+  } else if (
+    liveResult.status === 'passed'
     && (localStatus === 'passed' || localStatus === 'skipped')
-    ? 'passed'
-    : liveResult.status === 'skipped' && localStatus === 'passed'
-      ? 'passed'
-      : liveResult.status === 'errored'
-        ? 'errored'
-        : liveResult.status === 'skipped'
-          ? 'skipped'
-          : 'failed';
+  ) {
+    overallStatus = 'passed';
+  } else if (liveResult.status === 'skipped' && localStatus === 'passed') {
+    overallStatus = 'passed';
+  } else if (liveResult.status === 'errored') {
+    overallStatus = 'errored';
+  } else if (liveResult.status === 'skipped') {
+    overallStatus = 'skipped';
+  } else {
+    overallStatus = 'failed';
+  }
 
   const { result: verificationRecord, artifact: wgArtifact } = await executeSafeOperation({
     operation: 'markVerification',
@@ -1781,6 +1795,7 @@ async function handleRunningLiveVerification(
       flowGoal: run.flowGoal,
       attempts: liveResult.attempts,
       skipped: skip,
+      skipReason,
     },
     responseSummary: {
       status: liveResult.status,
@@ -1796,8 +1811,11 @@ async function handleRunningLiveVerification(
     provider: 'tinyfish-live',
     status: overallStatus,
   });
+  const liveTimelineTitle = skip
+    ? `Live browser verification skipped — result: ${overallStatus}. ${liveResult.summary}`
+    : `${rerunMode ? 'User-triggered rerun' : 'Re-ran the journey in a real browser'} — result: ${overallStatus}. ${liveResult.summary}`;
 
-  await appendRedisTimeline(event, 'running_live_verification', overallStatus === 'failed' ? 'failed' : 'completed', `${rerunMode ? 'User-triggered rerun' : 'Re-ran the journey in a real browser'} — result: ${overallStatus}. ${liveResult.summary}`, {
+  await appendRedisTimeline(event, 'running_live_verification', overallStatus === 'failed' ? 'failed' : 'completed', liveTimelineTitle, {
     verificationStreamId,
     status: overallStatus,
     attempts: liveResult.attempts,
@@ -1939,11 +1957,11 @@ async function handleCreatingPr(redis: RedisClientType, run: FlowPrRun, event: F
         runId: run.id,
         patchId: latestPatch.id,
         provider: 'github',
-        title: 'FlowPR PR blocked by Guild.ai gate',
+        title: 'Pull request not opened: Guild.ai gate held it',
         branchName: latestPatch.branchName ?? 'flowpr/blocked',
         baseBranch: run.baseBranch,
         status: 'failed',
-        raw: { gate },
+        raw: { gate, attemptType: 'gate_denied' },
       });
       await persistRedisState(redis, event, 'creating_pr', { gateDecision: gate.decision });
       await emitNextStep(redis, event, 'publishing_artifacts', 'PR was denied; continuing the loop.');
@@ -1961,7 +1979,7 @@ async function handleCreatingPr(redis: RedisClientType, run: FlowPrRun, event: F
     }
 
     const observations = await listBrowserObservations(run.id);
-    const primaryBefore = observations.find((observation) => observation.status === 'failed' || observation.status === 'errored');
+    const primaryBefore = pickPrimaryFailureObservation(observations, run.previewUrl);
     const policyHits = await listPolicyHits(run.id);
     const hypotheses = await listBugHypotheses(run.id);
     const hypothesis = hypotheses[hypotheses.length - 1];
@@ -2047,7 +2065,7 @@ async function handleCreatingPr(redis: RedisClientType, run: FlowPrRun, event: F
       overallStatus: (localVerificationRecord?.status ?? 'skipped') as 'passed' | 'failed' | 'errored' | 'skipped',
       summary: localVerificationRecord?.summary ?? 'Local verification not recorded.',
       steps: localArtifacts.map((step) => ({
-        step: (step.step as 'typecheck' | 'lint' | 'unit' | 'e2e') ?? 'typecheck',
+        step: (step.step as 'install' | 'typecheck' | 'lint' | 'unit' | 'e2e') ?? 'typecheck',
         status: (step.status as 'passed' | 'failed' | 'skipped' | 'errored') ?? 'skipped',
         command: String(step.command ?? ''),
         durationMs: Number(step.durationMs ?? 0),
@@ -2459,7 +2477,7 @@ async function handleDone(redis: RedisClientType, run: FlowPrRun, event: FlowPrR
     redisStreamId: event.id,
     phase: 'done',
   });
-  await appendRedisTimeline(event, 'done', 'completed', 'Run finished. The pull request is ready for review.');
+  await appendRedisTimeline(event, 'done', 'completed', 'Run finished. Review the evidence, patch, and PR sections for the outcome.');
   await recordBenchmarkEvaluation({
     runId: run.id,
     sponsor: 'redis',

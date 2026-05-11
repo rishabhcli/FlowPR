@@ -2,9 +2,9 @@ import { NextResponse } from 'next/server';
 import {
   connectFlowPrRedisClient,
   createFlowPrRedisClient,
-  getRunDetail,
   readLiveStreams,
-} from '@flowpr/tools';
+} from '@flowpr/tools/redis';
+import { getRunDetail } from '@flowpr/tools/insforge';
 
 export const runtime = 'nodejs';
 

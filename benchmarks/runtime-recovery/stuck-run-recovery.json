@@ -1,0 +1,67 @@
+{
+  "name": "stuck-run-recovery",
+  "flowGoal": "Detect an active run that has stopped advancing and show the operator how to recover it.",
+  "expectedBugType": "stuck_run",
+  "successCondition": "A stale active run produces a recovery signal with a replay command and worker restart guidance.",
+  "riskLevel": "high",
+  "viewport": { "width": 1280, "height": 900 },
+  "expectedEvidence": {
+    "providers": ["redis", "playwright"],
+    "artifacts": ["worker heartbeat hash", "observability summary", "health recovery queue"],
+    "signals": [
+      "Active run older than the stuck threshold without a live worker is classified as stuck",
+      "Recovery guidance includes pnpm run:replay <runId> --fail-on-not-ready",
+      "No-worker recovery guidance includes pnpm worker:dev"
+    ]
+  },
+  "expectedDiagnosis": {
+    "bugType": "stuck_run",
+    "severity": "high",
+    "likelyFiles": [
+      "packages/tools/src/recovery.ts",
+      "apps/dashboard/app/api/observability/summary/route.ts",
+      "apps/dashboard/app/health/page.tsx"
+    ]
+  },
+  "expectedPatch": {
+    "filesChanged": [
+      "packages/tools/src/recovery.ts",
+      "apps/dashboard/app/api/observability/summary/route.ts",
+      "apps/dashboard/app/health/page.tsx",
+      "apps/dashboard/components/flowpr/system-status-bar.tsx",
+      "scripts/recovery-visibility-smoke.ts"
+    ]
+  },
+  "expectedReadiness": {
+    "overall": "ready-or-actionable",
+    "requiredSignals": ["recovery.stuckCount", "recovery.stuckRuns", "recovery.actionSummary"]
+  },
+  "expectedRecovery": {
+    "signals": [
+      "classifyStuckRuns returns a stale active run when no live worker owns it",
+      "stale worker heartbeats are treated as recovery evidence",
+      "terminal runs are not presented as active work"
+    ],
+    "nextActions": [
+      "pnpm run:replay <runId> --fail-on-not-ready",
+      "pnpm worker:dev"
+    ],
+    "commands": ["pnpm recovery:smoke", "pnpm run:replay <runId> --fail-on-not-ready"]
+  },
+  "verification": {
+    "command": "pnpm recovery:smoke",
+    "testName": "Recovery visibility smoke ok.",
+    "successCondition": "Stuck-run recovery classification and next-action guidance are deterministic."
+  },
+  "fixtures": {
+    "category": "runtime-recovery",
+    "previewUrl": "http://localhost:3000/health",
+    "expectedFilesChanged": [
+      "packages/tools/src/recovery.ts",
+      "apps/dashboard/app/api/observability/summary/route.ts",
+      "apps/dashboard/app/health/page.tsx",
+      "apps/dashboard/components/flowpr/system-status-bar.tsx",
+      "scripts/recovery-visibility-smoke.ts"
+    ]
+  }
+}

@@ -2,6 +2,7 @@ const { existsSync, readFileSync } = require('node:fs');
 const { join } = require('node:path');
 
 const skillDir = join(__dirname, '..');
+const repoRoot = join(skillDir, '..', '..');
 const required = [
   'SKILL.md',
   'shipables.json',
@@ -40,6 +41,35 @@ if (!hasGitHubToken && !hasGitHubApp) {
 
 if (!manifest.entrypoints?.run_flow_test) {
   throw new Error('shipables.json must declare run_flow_test entrypoint');
+}
+
+const rootPackagePath = join(repoRoot, 'package.json');
+if (existsSync(rootPackagePath)) {
+  const rootPackage = JSON.parse(readFileSync(rootPackagePath, 'utf8'));
+  if (!rootPackage.scripts?.['demo:preflight']) {
+    throw new Error('root package.json must expose demo:preflight');
+  }
+
+  if (!rootPackage.scripts?.['pr:packet-smoke']) {
+    throw new Error('root package.json must expose pr:packet-smoke');
+  }
+
+  if (!rootPackage.scripts?.['recovery:smoke']) {
+    throw new Error('root package.json must expose recovery:smoke');
+  }
+}
+
+const demoRunbook = readFileSync(join(skillDir, 'references/demo-runbook.md'), 'utf8');
+if (!demoRunbook.includes('pnpm demo:preflight')) {
+  throw new Error('demo runbook must include pnpm demo:preflight');
+}
+
+if (!demoRunbook.includes('PR packet')) {
+  throw new Error('demo runbook must mention the PR packet preflight check');
+}
+
+if (!demoRunbook.includes('recovery guidance')) {
+  throw new Error('demo runbook must mention the recovery guidance preflight check');
 }
 
 console.log(`FlowPR skill dry run ok: ${required.join(', ')}`);

@@ -7,6 +7,7 @@ export * from './insforge';
 export * from './mcp';
 export * from './readiness';
 export * from './redact';
+export * from './recovery';
 export * from './redis';
 export * from './repo';
 export * from './senso';

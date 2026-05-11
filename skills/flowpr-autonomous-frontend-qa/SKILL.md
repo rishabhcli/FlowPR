@@ -1,15 +1,15 @@
 ---
 name: flowpr-autonomous-frontend-qa
-description: Test frontend flows in live browsers, diagnose visual failures, patch code, verify fixes, and create GitHub pull requests with evidence.
+description: Test frontend flows in live browsers, diagnose visual failures, patch code, verify fixes, and create GitHub pull requests or human handoff reports with evidence.
 license: MIT
-compatibility: Requires network access, GitHub token or app, TinyFish API key, Redis, InsForge, Guild.ai, and optional Senso.
+compatibility: Full loop requires network access, GitHub token or app, TinyFish API key, Redis, InsForge, Guild.ai, and optional Senso; degraded local mode can still capture Playwright proof and record honest skipped provider paths.
 metadata:
   version: "1.0.0"
 ---
 
 # FlowPR Autonomous Frontend QA
 
-Use this skill when a coding agent must verify a frontend flow, collect browser evidence, modify source code, add regression tests, rerun verification, and open a PR.
+Use this skill when a coding agent must verify a frontend flow, collect browser evidence, modify source code, add regression tests, rerun verification, and open a PR or produce a governed handoff packet.
 
 ## When to use
 
@@ -25,8 +25,9 @@ Use this skill when a coding agent must verify a frontend flow, collect browser 
 4. Uses Redis memory to search for prior bug signatures and successful patches.
 5. Generates a structured bug hypothesis with bug type, severity, likely files, and confidence.
 6. Clones the repo, writes a minimal patch + regression test, and runs local verification.
-7. Re-verifies the fix with TinyFish and opens a draft/non-draft GitHub PR with the evidence packet.
-8. Writes successful patch signatures to Redis memory and closes the Guild.ai session trace.
+7. Re-verifies the fix with TinyFish when the preview is reachable; for localhost previews, records an explicit reachability skip backed by local verification.
+8. Opens a draft/non-draft GitHub PR when the Guild.ai gate allows it, or writes a human handoff report when the gate holds PR creation.
+9. Writes successful patch signatures to Redis memory and closes the Guild.ai session trace.
 
 ## Rules
 
@@ -37,8 +38,8 @@ Use this skill when a coding agent must verify a frontend flow, collect browser 
 5. Use WunderGraph safe operations instead of arbitrary backend writes.
 6. Use Guild.ai to record agent sessions, action gates, and benchmark promotion status.
 7. Use Senso policy context before final diagnosis or PR writing.
-8. Create a PR, not an auto-merge.
-9. Include before/after screenshots and verification in the PR body.
+8. Create a PR only when the configured Guild.ai gate allows it; otherwise produce a human handoff report.
+9. Include before/after screenshots or honest local-proof fallback plus verification in the PR body or handoff report.
 10. Stop before PR creation if the Guild.ai gate denies the action.
 
 ## Inputs
@@ -55,7 +56,7 @@ Use this skill when a coding agent must verify a frontend flow, collect browser 
 
 - Redis stream events on `flowpr:runs`, `flowpr:agent_steps`, `flowpr:browser_results`, `flowpr:patches`, `flowpr:verification`.
 - InsForge rows in `qa_runs`, `browser_observations`, `bug_hypotheses`, `patches`, `verification_results`, `pull_requests`, and `provider_artifacts`.
-- GitHub pull request with FlowPR evidence body.
+- GitHub pull request with FlowPR evidence body, or a human handoff report when PR creation is gated.
 
 ## References
 

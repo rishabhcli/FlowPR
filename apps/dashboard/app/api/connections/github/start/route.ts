@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { startGitHubOAuth } from '@flowpr/tools';
+import { startGitHubOAuth } from '@flowpr/tools/github-connections';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';

@@ -25,4 +25,4 @@ export {
   storeSuccessfulPatchMemory,
   type FlowPrRedisEvent,
   type RunStreamEvent,
-} from '@flowpr/tools';
+} from '@flowpr/tools/redis';

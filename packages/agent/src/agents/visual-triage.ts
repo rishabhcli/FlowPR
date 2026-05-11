@@ -4,6 +4,10 @@ import type {
   PolicyHit,
   RiskLevel,
 } from '@flowpr/schemas';
+import {
+  isLocalPreviewUrl,
+  isRemoteLocalhostReachabilityObservation,
+} from '@flowpr/schemas';
 
 export type BugType =
   | 'blocked_cta'
@@ -28,6 +32,7 @@ export interface TriageEvidence {
   traceUrl?: string;
   consoleErrors: string[];
   networkErrors: string[];
+  remoteLocalhostReachability?: boolean;
 }
 
 export interface BugSignatureParts {
@@ -53,6 +58,7 @@ export interface MemoryContext {
 
 export interface TriageInput {
   flowGoal: string;
+  previewUrl?: string;
   baselineRisk: RiskLevel;
   observations: BrowserObservation[];
   policy: PolicyContext;
@@ -110,17 +116,50 @@ function flattenErrors(values: Record<string, unknown>[] | undefined): string[] 
     .filter((line) => line.length > 0);
 }
 
-function pickPrimaryObservation(observations: BrowserObservation[]): BrowserObservation | undefined {
+function isFailureObservation(observation: BrowserObservation): boolean {
+  return observation.status === 'failed' || observation.status === 'errored';
+}
+
+function scoreFailureObservation(observation: BrowserObservation, previewUrl?: string): number {
+  const localPreview = previewUrl ? isLocalPreviewUrl(previewUrl) : false;
+  const remoteLocalhostFailure = previewUrl
+    ? isRemoteLocalhostReachabilityObservation(previewUrl, observation)
+    : false;
+  let score = 0;
+
+  if (observation.status === 'failed') score += 6;
+  if (observation.status === 'errored') score += 3;
+  if (observation.provider === 'playwright') score += localPreview ? 24 : 10;
+  if (observation.provider === 'tinyfish') score += localPreview ? 4 : 20;
+  if (observation.traceUrl) score += 8;
+  if (observation.screenshotUrl) score += 6;
+  if ((observation.domSummary ?? '').trim()) score += 4;
+  if ((observation.observedBehavior ?? '').trim()) score += 2;
+  if (remoteLocalhostFailure) score -= 100;
+
+  return score;
+}
+
+export function pickPrimaryObservation(
+  observations: BrowserObservation[],
+  previewUrl?: string,
+): BrowserObservation | undefined {
   const failures = observations.filter((observation) => observation.status === 'failed' || observation.status === 'errored');
 
   if (failures.length === 0) return observations[observations.length - 1];
 
-  failures.sort((a, b) => {
-    const score = (o: BrowserObservation) => (o.provider === 'tinyfish' ? 2 : 1) + (o.status === 'failed' ? 1 : 0);
-    return score(b) - score(a);
-  });
+  failures.sort((a, b) => scoreFailureObservation(b, previewUrl) - scoreFailureObservation(a, previewUrl));
 
   return failures[0];
+}
+
+export function pickPrimaryFailureObservation(
+  observations: BrowserObservation[],
+  previewUrl?: string,
+): BrowserObservation | undefined {
+  const observation = pickPrimaryObservation(observations, previewUrl);
+
+  return observation && isFailureObservation(observation) ? observation : undefined;
 }
 
 function classifyBugType(input: {
@@ -325,7 +364,7 @@ export function policyContextFromHits(hits: PolicyHit[]): PolicyContext {
 }
 
 export function diagnoseFailure(input: TriageInput): TriageOutput {
-  const observation = pickPrimaryObservation(input.observations);
+  const observation = pickPrimaryObservation(input.observations, input.previewUrl);
   const topDomFinding = flattenFinding(observation) ?? '';
   const failedStep = observation?.failedStep ?? 'flow-failed';
   const visibleError = observation?.observedBehavior ?? '';
@@ -375,6 +414,9 @@ export function diagnoseFailure(input: TriageInput): TriageOutput {
     traceUrl: observation?.traceUrl,
     consoleErrors,
     networkErrors,
+    remoteLocalhostReachability: Boolean(
+      observation && input.previewUrl && isRemoteLocalhostReachabilityObservation(input.previewUrl, observation),
+    ),
   };
 
   return {
@@ -401,8 +443,10 @@ function buildHypothesis(input: {
   likelyFiles: string[];
 }): string {
   switch (input.bugType) {
-    case 'blocked_cta':
-      return `The primary CTA for "${input.flowGoal}" is present in the DOM but obstructed at the viewport click target by ${input.topDomFinding || 'an overlay'}. Likely stacking context issue in ${input.likelyFiles.join(', ')}.`;
+    case 'blocked_cta': {
+      const obstruction = input.topDomFinding || 'an overlay at the CTA center';
+      return `The primary CTA for "${input.flowGoal}" is present in the DOM but obstructed at the viewport click target: ${obstruction}. Likely stacking context issue in ${input.likelyFiles.join(', ')}.`;
+    }
     case 'client_navigation_failure':
       return `Client navigation from step ${input.failedStep} does not complete. Likely missing handler or broken router link in ${input.likelyFiles.join(', ')}.`;
     case 'auth_redirect_failure':
@@ -418,9 +462,15 @@ function buildHypothesis(input: {
 
 function buildSuspectedCause(input: { bugType: BugType; visibleError: string; topDomFinding: string }): string {
   if (input.bugType === 'blocked_cta') {
-    return input.topDomFinding
-      ? `Top element at the CTA center is ${input.topDomFinding}, which obstructs the clickable primary action.`
-      : 'The primary CTA element is present but not the topmost node at its center, indicating an overlay z-index conflict.';
+    if (input.topDomFinding) {
+      const finding = input.topDomFinding.replace(/[.!?]+$/, '');
+
+      return /^CTA center is/i.test(finding)
+        ? `${finding}, so the primary checkout action is not clickable.`
+        : `Top element at the CTA center is ${finding}, which obstructs the clickable primary action.`;
+    }
+
+    return 'The primary CTA element is present but not the topmost node at its center, indicating an overlay z-index conflict.';
   }
 
   return input.visibleError || 'Derived from the browser observation; see evidence for full context.';

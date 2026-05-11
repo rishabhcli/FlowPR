@@ -4,7 +4,7 @@ import {
   getProgressHistory,
   readProgressEvents,
   readLiveStreams,
-} from '@flowpr/tools';
+} from '@flowpr/tools/redis';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';

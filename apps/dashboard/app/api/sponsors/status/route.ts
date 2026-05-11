@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { checkSponsorStatuses } from '@flowpr/tools';
+import { checkSponsorStatuses } from '@flowpr/tools/sponsors';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';

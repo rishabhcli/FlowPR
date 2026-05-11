@@ -8,7 +8,8 @@
     "start": "next start --port 3100",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "test:checkout": "playwright test --config playwright.config.ts"
+    "test:checkout": "PLAYWRIGHT_RUN_LABEL=checkout playwright test --config playwright.config.ts tests/checkout-mobile.spec.ts",
+    "test:benchmarks": "PLAYWRIGHT_RUN_LABEL=benchmarks playwright test --config playwright.config.ts tests/benchmark-fixtures.spec.ts --workers=1"
   },
   "dependencies": {
     "next": "^15.3.0",

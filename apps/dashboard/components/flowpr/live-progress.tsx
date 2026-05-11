@@ -1,6 +1,7 @@
 'use client';
 
 import { Activity, Radio } from 'lucide-react';
+import { normalizeRunOutcomeCopy } from '@flowpr/schemas';
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -61,7 +62,7 @@ export function LiveProgress({ progress, connected, className }: LiveProgressPro
                   <Activity className="mt-0.5 h-3 w-3 shrink-0 text-primary" />
                   <div className="min-w-0 flex-1">
                     <p className="text-xs text-foreground">
-                      {entry.message || entry.kind}
+                      {normalizeRunOutcomeCopy(entry.message || entry.kind)}
                     </p>
                     <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[10px] uppercase tracking-wide text-muted-foreground">
                       {entry.actor && <span>{entry.actor}</span>}

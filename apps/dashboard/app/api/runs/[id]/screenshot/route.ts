@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { downloadRunArtifact } from '@flowpr/tools';
+import { downloadRunArtifact } from '@flowpr/tools/insforge';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';

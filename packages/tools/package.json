@@ -5,8 +5,22 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./env": "./src/env.ts",
     "./playwright": "./src/playwright.ts",
-    "./failure-classifier": "./src/failure-classifier.ts"
+    "./failure-classifier": "./src/failure-classifier.ts",
+    "./github": "./src/github.ts",
+    "./github-connections": "./src/github-connections.ts",
+    "./insforge": "./src/insforge.ts",
+    "./guildai": "./src/guildai.ts",
+    "./readiness": "./src/readiness.ts",
+    "./recovery": "./src/recovery.ts",
+    "./redis": "./src/redis.ts",
+    "./repo": "./src/repo.ts",
+    "./senso": "./src/senso.ts",
+    "./sponsors": "./src/sponsors.ts",
+    "./tinyfish": "./src/tinyfish.ts",
+    "./validators": "./src/validators.ts",
+    "./wundergraph": "./src/wundergraph.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

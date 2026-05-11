@@ -13,9 +13,12 @@ import {
 } from 'lucide-react';
 import type { RunDetail } from '@flowpr/schemas';
 import {
+  hasPassedLocalPlaywrightObservation,
+  isIgnoredRemoteLocalhostObservation,
   labelRiskLevel,
   labelRunStatus,
   labelVerificationStatus,
+  validateRunEvidenceIntegrity,
 } from '@flowpr/schemas';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -34,6 +37,7 @@ import { DiagnosisCard } from '@/components/flowpr/diagnosis-card';
 import { OutcomeHero } from '@/components/flowpr/outcome-hero';
 import { PatchCard } from '@/components/flowpr/patch-card';
 import { PrCard } from '@/components/flowpr/pr-card';
+import { HandoffReportCard } from '@/components/flowpr/handoff-report-card';
 import { Timeline } from '@/components/flowpr/timeline';
 import {
   ReadinessMeter,
@@ -214,6 +218,31 @@ export default function RunDetailPage({
   }
 
   const { run } = detail;
+  const evidenceIntegrityIssues = validateRunEvidenceIntegrity(detail);
+  const dangerEvidenceIntegrityIssues = evidenceIntegrityIssues.filter(
+    (issue) => issue.severity === 'danger',
+  );
+  const latestHypothesis = detail.bugHypotheses[detail.bugHypotheses.length - 1];
+  const latestPatch = detail.patches[detail.patches.length - 1];
+  const latestPR = detail.pullRequests[detail.pullRequests.length - 1];
+  const hasHandoffReport = detail.providerArtifacts.some(
+    (artifact) => artifact.artifactType === 'investigation_report',
+  );
+  const liveVerification = detail.verificationResults.find(
+    (result) => result.provider === 'tinyfish-live',
+  );
+  const localVerification = detail.verificationResults.find(
+    (result) => result.provider === 'local',
+  );
+  const localPlaywrightPassed = hasPassedLocalPlaywrightObservation(detail.browserObservations);
+  const isIgnoredObservation = (obs: (typeof detail.browserObservations)[number]) =>
+    isIgnoredRemoteLocalhostObservation(run.previewUrl, detail.browserObservations, obs);
+  const ignoredRemoteObservations = detail.browserObservations.filter(isIgnoredObservation);
+  const environmentOnlyRun =
+    localPlaywrightPassed &&
+    ignoredRemoteObservations.length > 0 &&
+    !latestHypothesis &&
+    !latestPatch;
   const hasScreenshot = (obs: (typeof detail.browserObservations)[number]) =>
     Boolean(obs.screenshotKey || obs.screenshotUrl);
   const observationsWithScreenshots = [...detail.browserObservations]
@@ -223,35 +252,46 @@ export default function RunDetailPage({
         new Date(a.createdAt ?? 0).getTime() -
         new Date(b.createdAt ?? 0).getTime(),
     );
-  // Before = first failing observation that has a screenshot; otherwise the
-  // earliest observation we have any pixels for.
+  const actionableObservationsWithScreenshots = observationsWithScreenshots.filter(
+    (obs) => !isIgnoredObservation(obs),
+  );
+  const ignoredObservationsWithScreenshots = observationsWithScreenshots.filter(isIgnoredObservation);
+  // Before = first actionable failing observation that has a screenshot. For
+  // local-only runs, show the remote reachability screenshot as environment proof.
   const beforeObservation =
-    observationsWithScreenshots.find(
+    actionableObservationsWithScreenshots.find(
       (obs) => obs.status === 'failed' || obs.status === 'errored',
-    ) ?? observationsWithScreenshots[0];
+    ) ??
+    (environmentOnlyRun
+      ? ignoredObservationsWithScreenshots[0]
+      : observationsWithScreenshots.find((obs) => obs.status === 'failed' || obs.status === 'errored') ??
+        observationsWithScreenshots[0]);
   // After = passing observation if one exists; otherwise the most recent
   // observation (post-patch state). Avoid duplicating the Before frame.
   const passedObservation = observationsWithScreenshots.find(
     (obs) => obs.status === 'passed',
   );
-  const lastObservation =
-    observationsWithScreenshots[observationsWithScreenshots.length - 1];
   const afterObservation =
-    passedObservation ??
-    (lastObservation && lastObservation !== beforeObservation
-      ? lastObservation
-      : undefined);
+    passedObservation;
   const afterIsPassed = Boolean(passedObservation);
+  const localProofDetails = (() => {
+    const steps = localVerification?.raw?.steps;
+    if (!Array.isArray(steps)) return undefined;
+    return steps
+      .map((step) => {
+        if (!step || typeof step !== 'object') return undefined;
+        const record = step as Record<string, unknown>;
+        const name = typeof record.step === 'string' ? record.step : undefined;
+        const status = typeof record.status === 'string' ? record.status : undefined;
+        return name && status ? `${name}: ${status}` : undefined;
+      })
+      .filter((value): value is string => Boolean(value));
+  })();
+  const localVerificationIsProof =
+    !afterObservation &&
+    localVerification?.status === 'passed' &&
+    latestPatch?.status === 'generated';
   const runFinished = run.status === 'done' || run.status === 'failed';
-  const latestHypothesis = detail.bugHypotheses[detail.bugHypotheses.length - 1];
-  const latestPatch = detail.patches[detail.patches.length - 1];
-  const latestPR = detail.pullRequests[detail.pullRequests.length - 1];
-  const liveVerification = detail.verificationResults.find(
-    (result) => result.provider === 'tinyfish-live',
-  );
-  const localVerification = detail.verificationResults.find(
-    (result) => result.provider === 'local',
-  );
 
   const elapsedMs = run.startedAt
     ? (run.completedAt ? new Date(run.completedAt).getTime() : Date.now()) -
@@ -336,6 +376,31 @@ export default function RunDetailPage({
 
             <OutcomeHero detail={detail} />
 
+            {evidenceIntegrityIssues.length > 0 && (
+              <Alert
+                variant={dangerEvidenceIntegrityIssues.length > 0 ? 'destructive' : 'warning'}
+              >
+                <AlertTriangle className="h-4 w-4" />
+                <AlertTitle>
+                  Provider proof needs review
+                </AlertTitle>
+                <AlertDescription>
+                  <p>
+                    {dangerEvidenceIntegrityIssues.length > 0
+                      ? `${dangerEvidenceIntegrityIssues.length} evidence claim${dangerEvidenceIntegrityIssues.length === 1 ? '' : 's'} lack durable provider artifacts.`
+                      : 'All critical proof exists, but one or more governance/support records should be checked.'}
+                  </p>
+                  <ul className="mt-2 space-y-1 text-xs">
+                    {evidenceIntegrityIssues.slice(0, 4).map((issue) => (
+                      <li key={issue.id}>
+                        {issue.message} Expected: <span className="font-mono">{issue.expectedArtifact}</span>.
+                      </li>
+                    ))}
+                  </ul>
+                </AlertDescription>
+              </Alert>
+            )}
+
             <Card>
               <CardContent className="p-5">
                 <PhaseStepper
@@ -366,15 +431,25 @@ export default function RunDetailPage({
             <div className="space-y-6">
               <Card>
                 <CardHeader>
-                  <CardTitle>Before → After</CardTitle>
+                  <CardTitle>
+                    {environmentOnlyRun || localVerificationIsProof ? 'Browser failure → Local proof' : 'Before → After'}
+                  </CardTitle>
                   <p className="text-xs text-muted-foreground">
-                    Failing browser evidence on the left, verified fix on the right.
+                    {environmentOnlyRun
+                      ? 'TinyFish could not reach the loopback preview, while local Playwright proved the flow.'
+                      : localVerificationIsProof
+                        ? 'Failing browser evidence on the left, local verification proof on the right.'
+                      : 'Failing browser evidence on the left, verified fix on the right.'}
                   </p>
                 </CardHeader>
                 <CardContent>
                   <BeforeAfter
                     runFinished={runFinished}
-                    afterIsPassed={afterIsPassed}
+                    afterIsPassed={afterIsPassed || localVerificationIsProof}
+                    beforeLabel={environmentOnlyRun ? 'Remote' : undefined}
+                    afterLabel={environmentOnlyRun || localVerificationIsProof ? 'Local · passed' : undefined}
+                    beforeBadge={environmentOnlyRun ? 'provider unreachable' : undefined}
+                    afterBadge={environmentOnlyRun || localVerificationIsProof ? 'local passed' : undefined}
                     before={(() => {
                       const src = beforeObservation
                         ? artifactSrc(run.id, {
@@ -385,7 +460,9 @@ export default function RunDetailPage({
                       return src
                         ? {
                             url: src,
-                            caption: beforeObservation?.failedStep ?? 'Failing run',
+                            caption: environmentOnlyRun
+                              ? 'Remote browser could not reach localhost'
+                              : beforeObservation?.failedStep ?? 'Failing run',
                           }
                         : null;
                     })()}
@@ -399,11 +476,21 @@ export default function RunDetailPage({
                       if (!src) return null;
                       return {
                         url: src,
-                        caption: afterIsPassed
-                          ? 'Verified fix'
-                          : 'Post-patch state',
+                        caption: environmentOnlyRun
+                          ? 'Local Playwright reached success'
+                          : afterIsPassed
+                            ? 'Verified fix'
+                            : 'Post-patch state',
                       };
                     })()}
+                    afterProof={
+                      localVerificationIsProof && localVerification
+                        ? {
+                            summary: localVerification.summary,
+                            details: localProofDetails,
+                          }
+                        : null
+                    }
                   />
                 </CardContent>
               </Card>
@@ -419,6 +506,11 @@ export default function RunDetailPage({
                     load().catch(() => undefined);
                   }}
                 />
+                {hasHandoffReport && (
+                  <div className="md:col-span-2">
+                    <HandoffReportCard detail={detail} />
+                  </div>
+                )}
               </div>
 
               <Card>

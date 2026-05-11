@@ -4,8 +4,10 @@ import {
   createFlowPrRedisClient,
   ensureFlowPrConsumerGroups,
   emitAgentStep,
+} from '@flowpr/tools/redis';
+import {
   getRun,
-} from '@flowpr/tools';
+} from '@flowpr/tools/insforge';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';

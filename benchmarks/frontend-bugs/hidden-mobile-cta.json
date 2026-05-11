@@ -5,6 +5,31 @@
   "successCondition": "Checkout reaches /success after patch.",
   "riskLevel": "critical",
   "viewport": { "width": 390, "height": 844 },
+  "expectedEvidence": {
+    "providers": ["tinyfish", "playwright"],
+    "artifacts": ["mobile screenshot", "playwright trace", "dom obstruction finding"],
+    "signals": [
+      "Pay now CTA center is covered by the cookie banner before the patch",
+      "Playwright reaches /success after the patch"
+    ]
+  },
+  "expectedDiagnosis": {
+    "bugType": "blocked_cta",
+    "severity": "critical",
+    "likelyFiles": ["apps/demo-target/app/styles.css"]
+  },
+  "expectedPatch": {
+    "filesChanged": [
+      "apps/demo-target/app/styles.css",
+      "apps/demo-target/tests/checkout-mobile-regression.spec.ts"
+    ],
+    "regressionTest": "apps/demo-target/tests/checkout-mobile-regression.spec.ts"
+  },
+  "verification": {
+    "command": "pnpm benchmark:fixtures",
+    "testName": "hidden-mobile-cta: mobile checkout CTA is visible, unobstructed, and completes checkout",
+    "successCondition": "Mobile checkout CTA is visible, unobstructed, and reaches /success."
+  },
   "fixtures": {
     "previewUrl": "http://localhost:3100",
     "expectedFilesChanged": [

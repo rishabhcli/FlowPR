@@ -29,7 +29,7 @@ async function assertElementNotObstructed(page: Page, locator: Locator): Promise
 
 test('mobile checkout CTA is visible, unobstructed, and completes checkout', async ({ page }) => {
   await page.goto('/');
-  await page.getByRole('link', { name: /pro/i }).click();
+  await page.getByRole('link', { name: /^pro\b/i }).click();
 
   const payNow = page.getByRole('link', { name: /pay now/i });
   await expect(payNow).toBeVisible();
