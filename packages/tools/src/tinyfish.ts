@@ -181,11 +181,15 @@ export function normalizeTinyFishObservation(
   fallback: { status: Run['status'] | 'STREAM_FAILED'; previewUrl: string; error?: RunError | { message: string } },
 ): TinyFishBrowserObservation {
   const parsed = extractJsonObject(result);
-  const passed = typeof parsed?.passed === 'boolean'
-    ? parsed.passed
-    : fallback.status === 'COMPLETED' && !fallback.error;
+  const hasStructuredPassResult = typeof parsed?.passed === 'boolean';
+  const passed = hasStructuredPassResult ? parsed.passed as boolean : false;
   const failedStep = optionalString(parsed?.failed_step ?? parsed?.failedStep);
-  const visibleError = optionalString(parsed?.visible_error ?? parsed?.visibleError ?? fallback.error?.message);
+  const visibleError = optionalString(
+    parsed?.visible_error
+      ?? parsed?.visibleError
+      ?? fallback.error?.message
+      ?? (!hasStructuredPassResult ? 'TinyFish completed without a structured QA result.' : undefined),
+  );
   const likelyRootCause = optionalString(parsed?.likely_root_cause ?? parsed?.likelyRootCause ?? visibleError);
 
   return {

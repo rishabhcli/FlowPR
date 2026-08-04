@@ -3,6 +3,8 @@ import { defineConfig, devices } from '@playwright/test';
 const runLabel = process.env.PLAYWRIGHT_RUN_LABEL ?? 'run';
 const targetPort = process.env.DEMO_TARGET_PORT ?? '3100';
 const targetUrl = process.env.DEMO_TARGET_URL ?? `http://localhost:${targetPort}`;
+const readinessUrl = `${targetUrl.replace(/\/+$/, '')}/api/flowpr-health`;
+const executablePath = process.env.FLOWPR_PLAYWRIGHT_EXECUTABLE_PATH?.trim();
 
 export default defineConfig({
   testDir: './tests',
@@ -13,6 +15,7 @@ export default defineConfig({
     trace: 'on',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
+    ...(executablePath ? { launchOptions: { executablePath } } : {}),
   },
   projects: [
     {
@@ -27,7 +30,7 @@ export default defineConfig({
     ? undefined
     : {
         command: `pnpm exec next dev --port ${targetPort}`,
-        url: targetUrl,
+        url: readinessUrl,
         reuseExistingServer: true,
         timeout: 120_000,
       },

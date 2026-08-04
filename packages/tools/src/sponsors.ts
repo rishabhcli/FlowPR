@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { getGitHubRepository } from './github';
+import { dirname, join, relative } from 'node:path';
+import { getGitHubRepository, hasGitHubCredentials } from './github';
 import { getInsForgeClient, listRecentRuns } from './insforge';
 import {
   connectFlowPrRedisClient,
@@ -14,7 +14,13 @@ import { listTinyFishRuns } from './tinyfish';
 import { loadLocalEnv } from './env';
 import { getWunderGraphConfig } from './wundergraph';
 
-export type SponsorStatusState = 'live' | 'not_configured' | 'failed' | 'local_artifact';
+export type SponsorStatusState =
+  | 'live'
+  | 'configured'
+  | 'not_configured'
+  | 'partial'
+  | 'failed'
+  | 'local_artifact';
 
 export interface SponsorStatus {
   sponsor: string;
@@ -23,6 +29,17 @@ export interface SponsorStatus {
   checkedAt: string;
   metadata?: Record<string, unknown>;
 }
+
+const SPONSOR_STATUS_CACHE_TTL_MS = 30_000;
+let sponsorStatusCache: {
+  key: string;
+  expiresAt: number;
+  value: SponsorStatus[];
+} | undefined;
+let sponsorStatusInFlight: {
+  key: string;
+  promise: Promise<SponsorStatus[]>;
+} | undefined;
 
 function findRepoRoot(startDir = process.cwd()): string {
   let dir = startDir;
@@ -59,7 +76,7 @@ async function checkSponsor(
   }
 }
 
-export async function checkSponsorStatuses(): Promise<SponsorStatus[]> {
+async function probeSponsorStatuses(): Promise<SponsorStatus[]> {
   loadLocalEnv();
 
   return Promise.all([
@@ -112,6 +129,31 @@ export async function checkSponsorStatuses(): Promise<SponsorStatus[]> {
       }
     }),
     checkSponsor('insforge', async () => {
+      const hasUrl = Boolean(
+        process.env.INSFORGE_API_URL ||
+          process.env.INSFORGE_URL ||
+          process.env.NEXT_PUBLIC_INSFORGE_URL,
+      );
+      const hasKey = Boolean(
+        process.env.INSFORGE_ANON_KEY ||
+          process.env.INSFORGE_API_KEY ||
+          process.env.NEXT_PUBLIC_INSFORGE_ANON_KEY,
+      );
+
+      if (!hasUrl && !hasKey) {
+        return {
+          state: 'not_configured',
+          summary: 'INSFORGE_API_URL and an InsForge key are missing.',
+        };
+      }
+
+      if (!hasUrl || !hasKey) {
+        return {
+          state: 'partial',
+          summary: 'InsForge configuration is incomplete; both the API URL and key are required.',
+        };
+      }
+
       await getInsForgeClient();
       const runs = await listRecentRuns(1);
 
@@ -126,11 +168,17 @@ export async function checkSponsorStatuses(): Promise<SponsorStatus[]> {
     }),
     checkSponsor('github', async () => {
       const repository = await getGitHubRepository('rishabhcli', 'FlowPR');
+      const authenticated = hasGitHubCredentials();
 
       return {
-        state: 'live',
-        summary: 'GitHub repository API responded.',
-        metadata: repository as unknown as Record<string, unknown>,
+        state: authenticated ? 'live' : 'partial',
+        summary: authenticated
+          ? 'GitHub repository API responded with authenticated credentials.'
+          : 'GitHub public repository API responded; authenticated credentials are missing.',
+        metadata: {
+          ...(repository as unknown as Record<string, unknown>),
+          authenticated,
+        },
       };
     }),
     checkSponsor('senso', async () => {
@@ -193,11 +241,12 @@ export async function checkSponsorStatuses(): Promise<SponsorStatus[]> {
     checkSponsor('guildai', async () => {
       if (process.env.GUILD_AI_API_KEY) {
         return {
-          state: 'live',
-          summary: 'Guild.ai API key is configured for live control-plane calls.',
+          state: 'configured',
+          summary: 'Guild.ai API key is configured; remote control-plane calls were not verified by this runtime.',
           metadata: {
             workspace: process.env.GUILD_AI_WORKSPACE,
             agentId: process.env.GUILD_AI_AGENT_ID,
+            remoteVerified: false,
           },
         };
       }
@@ -205,10 +254,11 @@ export async function checkSponsorStatuses(): Promise<SponsorStatus[]> {
       if (process.env.GUILD_GITHUB_APP_INSTALLED === 'true') {
         return {
           state: 'local_artifact',
-          summary: 'Guild GitHub app is marked installed; live API key is not configured.',
+          summary: 'Guild GitHub app is marked installed; the local action-gate adapter is active and no remote call was verified.',
           metadata: {
             workspace: process.env.GUILD_AI_WORKSPACE,
             agentId: process.env.GUILD_AI_AGENT_ID,
+            remoteVerified: false,
           },
         };
       }
@@ -219,7 +269,8 @@ export async function checkSponsorStatuses(): Promise<SponsorStatus[]> {
       };
     }),
     checkSponsor('shipables', async () => {
-      const skillPath = join(findRepoRoot(), 'skills', 'flowpr-autonomous-frontend-qa', 'shipables.json');
+      const repoRoot = findRepoRoot();
+      const skillPath = join(repoRoot, 'skills', 'flowpr-autonomous-frontend-qa', 'shipables.json');
 
       if (!existsSync(skillPath)) {
         return {
@@ -229,12 +280,13 @@ export async function checkSponsorStatuses(): Promise<SponsorStatus[]> {
       }
 
       return {
-        state: process.env.SHIPABLES_API_KEY ? 'live' : 'local_artifact',
+        state: process.env.SHIPABLES_API_KEY ? 'configured' : 'local_artifact',
         summary: process.env.SHIPABLES_API_KEY
-          ? 'Shipables API key and local skill manifest are present.'
+          ? 'Shipables API key and local skill manifest are present; remote delivery was not verified by this runtime.'
           : 'Local Shipables skill manifest is present; API key is not configured.',
         metadata: {
-          manifest: skillPath,
+          manifest: relative(repoRoot, skillPath),
+          ...(process.env.SHIPABLES_API_KEY ? { remoteVerified: false } : {}),
         },
       };
     }),
@@ -267,4 +319,65 @@ export async function checkSponsorStatuses(): Promise<SponsorStatus[]> {
       };
     }),
   ]);
+}
+
+function sponsorStatusCacheKey(): string {
+  return JSON.stringify({
+    dataMode: process.env.FLOWPR_DATA_MODE ?? '',
+    localStoreDir: process.env.FLOWPR_LOCAL_STORE_DIR ?? '',
+    tinyfish: Boolean(process.env.TINYFISH_API_KEY),
+    redisUrl: process.env.REDIS_URL ?? '',
+    insforgeUrl: process.env.INSFORGE_API_URL
+      ?? process.env.INSFORGE_URL
+      ?? process.env.NEXT_PUBLIC_INSFORGE_URL
+      ?? '',
+    insforgeKey: Boolean(
+      process.env.INSFORGE_ANON_KEY
+      || process.env.INSFORGE_API_KEY
+      || process.env.NEXT_PUBLIC_INSFORGE_ANON_KEY,
+    ),
+    github: hasGitHubCredentials(),
+    senso: Boolean(process.env.SENSO_API_KEY),
+    wundergraph: {
+      apiUrl: process.env.WUNDERGRAPH_API_URL ?? '',
+      mcpUrl: process.env.WUNDERGRAPH_MCP_URL ?? '',
+      apiKey: Boolean(process.env.WUNDERGRAPH_API_KEY),
+    },
+    guild: Boolean(
+      process.env.GUILD_AI_API_KEY
+      || process.env.GUILD_GITHUB_APP_INSTALLED === 'true',
+    ),
+    shipables: Boolean(process.env.SHIPABLES_API_KEY),
+    akash: Boolean(process.env.AKASH_API_KEY),
+  });
+}
+
+export async function checkSponsorStatuses(): Promise<SponsorStatus[]> {
+  loadLocalEnv();
+  const key = sponsorStatusCacheKey();
+  const now = Date.now();
+
+  if (sponsorStatusCache && sponsorStatusCache.key === key && sponsorStatusCache.expiresAt > now) {
+    return sponsorStatusCache.value;
+  }
+
+  if (sponsorStatusInFlight?.key === key) {
+    return sponsorStatusInFlight.promise;
+  }
+
+  const promise = probeSponsorStatuses();
+  sponsorStatusInFlight = { key, promise };
+  try {
+    const value = await promise;
+    sponsorStatusCache = {
+      key,
+      expiresAt: Date.now() + SPONSOR_STATUS_CACHE_TTL_MS,
+      value,
+    };
+    return value;
+  } finally {
+    if (sponsorStatusInFlight?.promise === promise) {
+      sponsorStatusInFlight = undefined;
+    }
+  }
 }

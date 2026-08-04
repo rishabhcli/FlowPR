@@ -2,7 +2,7 @@
 
 import { FormEvent, useState } from 'react';
 import { Play, Loader2 } from 'lucide-react';
-import type { RiskLevel } from '@flowpr/schemas';
+import type { PermissionProfile, RiskLevel } from '@flowpr/schemas';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -23,6 +23,7 @@ const defaults = {
   flowGoal:
     'On mobile, choose Pro on pricing, complete checkout, and reach success.',
   riskLevel: 'medium' as RiskLevel,
+  permissionProfile: 'draft-pr-only' as PermissionProfile,
 };
 
 interface RunFormProps {
@@ -32,6 +33,7 @@ interface RunFormProps {
     baseBranch: string;
     flowGoal: string;
     riskLevel: RiskLevel;
+    permissionProfile: PermissionProfile;
   }) => Promise<void> | void;
   isStarting?: boolean;
 }
@@ -42,10 +44,11 @@ export function RunForm({ onStart, isStarting = false }: RunFormProps) {
   const [baseBranch, setBaseBranch] = useState(defaults.baseBranch);
   const [flowGoal, setFlowGoal] = useState(defaults.flowGoal);
   const [riskLevel, setRiskLevel] = useState<RiskLevel>(defaults.riskLevel);
+  const [permissionProfile, setPermissionProfile] = useState<PermissionProfile>(defaults.permissionProfile);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    await onStart({ repoUrl, previewUrl, baseBranch, flowGoal, riskLevel });
+    await onStart({ repoUrl, previewUrl, baseBranch, flowGoal, riskLevel, permissionProfile });
   }
 
   return (
@@ -107,6 +110,19 @@ export function RunForm({ onStart, isStarting = false }: RunFormProps) {
               <SelectItem value="medium">Medium</SelectItem>
               <SelectItem value="high">High</SelectItem>
               <SelectItem value="critical">Critical</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="grid gap-1.5">
+          <Label htmlFor="permission-profile">Permission profile</Label>
+          <Select value={permissionProfile} onValueChange={(value) => setPermissionProfile(value as PermissionProfile)}>
+            <SelectTrigger id="permission-profile">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="investigation-only">Investigation only</SelectItem>
+              <SelectItem value="draft-pr-only">Draft PR only</SelectItem>
+              <SelectItem value="verified-pr">Verified PR</SelectItem>
             </SelectContent>
           </Select>
         </div>

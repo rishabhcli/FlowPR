@@ -24,6 +24,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { formatDurationShort } from '@/lib/phase-durations';
+import { selectFinalVerificationResults } from '@/lib/verification';
 
 type Tone = 'success' | 'warning' | 'danger' | 'info' | 'working';
 
@@ -71,8 +72,6 @@ const PHASE_LABELS: Record<string, string> = {
   learned: 'saving learnings',
 };
 
-const FINAL_VERIFICATION_PROVIDERS = new Set(['local', 'tinyfish-live']);
-
 function deriveOutcome(detail: RunDetail): OutcomeShape {
   const { run } = detail;
   const elapsedMs = run.startedAt
@@ -87,13 +86,12 @@ function deriveOutcome(detail: RunDetail): OutcomeShape {
     detail.bugHypotheses[detail.bugHypotheses.length - 1];
 
   const verificationResults = detail.verificationResults ?? [];
-  const finalVerifications = verificationResults.filter((v) =>
-    FINAL_VERIFICATION_PROVIDERS.has(v.provider),
-  );
+  const finalVerifications = selectFinalVerificationResults(verificationResults);
   const finalPassedCount = finalVerifications.filter((v) => v.status === 'passed').length;
+  const finalVerificationIds = new Set(finalVerifications.map((v) => v.id));
   const evidenceFailures = verificationResults.filter(
     (v) =>
-      !FINAL_VERIFICATION_PROVIDERS.has(v.provider) &&
+      !finalVerificationIds.has(v.id) &&
       (v.status === 'failed' || v.status === 'errored'),
   ).length;
   const finalVerificationLabel =

@@ -11,6 +11,8 @@ import {
   emitRunStarted,
   ensureFlowPrConsumerGroups,
 } from '@flowpr/tools/redis';
+import { getFlowProfile, touchFlowProfile } from '@flowpr/tools/insforge';
+import { getOwnerKey } from '@/lib/session';
 import {
   validateRunStartInput,
   type ValidationIssue,
@@ -40,9 +42,27 @@ function inputErrorResponse(error: unknown) {
 
 export async function POST(request: Request) {
   let input;
+  let profileId: string | undefined;
+  const ownerKey = await getOwnerKey();
+  if (!ownerKey) {
+    return NextResponse.json({ error: 'Sign in before starting a FlowPR run.' }, { status: 401 });
+  }
 
   try {
-    input = parseRunStartInput(await request.json());
+    const body = await request.json() as Record<string, unknown>;
+    profileId = typeof body.profileId === 'string' ? body.profileId : undefined;
+    if (profileId) {
+      const profile = await getFlowProfile(ownerKey, profileId);
+      if (!profile) {
+        return NextResponse.json({ error: 'Flow profile not found.' }, { status: 404 });
+      }
+      if (!profile.enabled) {
+        return NextResponse.json({ error: 'This flow profile is disabled.' }, { status: 409 });
+      }
+      input = { ...parseRunStartInput(profile), ownerKey };
+    } else {
+      input = { ...parseRunStartInput(body), ownerKey };
+    }
   } catch (error) {
     return inputErrorResponse(error);
   }
@@ -67,6 +87,20 @@ export async function POST(request: Request) {
   try {
     const run = await createRun(input);
 
+    if (profileId) {
+      await touchFlowProfile(ownerKey, profileId).catch(async (error) => {
+        await appendTimelineEvent({
+          runId: run.id,
+          actor: 'system',
+          phase: 'intake',
+          status: 'failed',
+          title: 'Flow profile usage could not be recorded.',
+          detail: getErrorMessage(error),
+          data: { profileId },
+        });
+      });
+    }
+
     await appendTimelineEvent({
       runId: run.id,
       actor: 'user',
@@ -77,6 +111,7 @@ export async function POST(request: Request) {
         repoUrl: run.repoUrl,
         previewUrl: run.previewUrl,
         flowGoal: run.flowGoal,
+        profileId,
         warnings: validation.issues.filter((issue) => issue.severity === 'warning').map((issue) => issue.message),
       },
     });
@@ -104,9 +139,10 @@ export async function POST(request: Request) {
       .filter((issue) => issue.severity === 'warning')
       .map((issue) => issue.message);
     let streamId: string | undefined;
-    const redis = createFlowPrRedisClient();
+    let redis: ReturnType<typeof createFlowPrRedisClient> | undefined;
 
     try {
+      redis = createFlowPrRedisClient();
       await connectFlowPrRedisClient(redis);
       await ensureFlowPrConsumerGroups(redis);
       streamId = await emitRunStarted(redis, {
@@ -162,7 +198,7 @@ export async function POST(request: Request) {
         },
       });
     } finally {
-      if (redis.isOpen) {
+      if (redis?.isOpen) {
         await redis.quit();
       }
     }

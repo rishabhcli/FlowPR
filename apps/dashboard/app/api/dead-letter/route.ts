@@ -9,6 +9,7 @@ import {
 } from '@flowpr/tools/insforge';
 import { buildDeadLetterNextAction } from '@flowpr/tools/recovery';
 import type { FlowPrRun } from '@flowpr/schemas';
+import { getOwnerKey } from '@/lib/session';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -28,16 +29,22 @@ function isResolved(entry: { createdAt?: string; runId?: string }, run: FlowPrRu
 }
 
 export async function GET(request: Request) {
+  const ownerKey = await getOwnerKey();
+  if (!ownerKey) return NextResponse.json({ error: 'Sign in to view recovery records.' }, { status: 401 });
+
   const url = new URL(request.url);
   const count = Number.parseInt(url.searchParams.get('count') ?? '20', 10);
 
-  const redis = createFlowPrRedisClient();
+  let redis: ReturnType<typeof createFlowPrRedisClient> | undefined;
   try {
+    redis = createFlowPrRedisClient();
     await connectFlowPrRedisClient(redis);
     const raw = await listDeadLetterEntries(redis, Number.isFinite(count) ? count : 20);
-    const runs = await listRecentRuns(100).catch(() => []);
+    const runs = await listRecentRuns(100, ownerKey).catch(() => []);
     const runsById = new Map(runs.map((run) => [run.id, run]));
-    const entries = raw.map((entry) => ({
+    const entries = raw
+      .filter((entry) => entry.fields.runId && runsById.has(entry.fields.runId))
+      .map((entry) => ({
       id: entry.id,
       runId: entry.fields.runId,
       sourceStream: entry.fields.sourceStream,
@@ -47,7 +54,7 @@ export async function GET(request: Request) {
       dedupeKey: entry.fields.dedupeKey,
       error: entry.fields.error,
       createdAt: entry.fields.createdAt,
-    })).map((entry) => {
+      })).map((entry) => {
       const run = entry.runId ? runsById.get(entry.runId) : undefined;
       const resolved = isResolved(entry, run);
       const orphaned = !run;
@@ -97,7 +104,7 @@ export async function GET(request: Request) {
       { status: 200 },
     );
   } finally {
-    if (redis.isOpen) {
+    if (redis?.isOpen) {
       await redis.quit().catch(() => undefined);
     }
   }

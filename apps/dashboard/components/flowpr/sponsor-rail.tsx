@@ -5,7 +5,7 @@ import { statusToTone, toneDotClass } from '@/lib/state-tone';
 
 export interface SponsorStatus {
   sponsor: string;
-  state: 'live' | 'not_configured' | 'failed' | 'local_artifact';
+  state: 'live' | 'configured' | 'not_configured' | 'partial' | 'failed' | 'local_artifact';
   summary: string;
   checkedAt: string;
   metadata?: Record<string, unknown>;
@@ -50,8 +50,10 @@ function sponsorName(sponsor: string) {
 
 function sponsorStateLabel(state: SponsorStatus['state']) {
   if (state === 'live') return 'Connected';
+  if (state === 'configured') return 'Configured';
   if (state === 'local_artifact') return 'Local mode';
   if (state === 'not_configured') return 'Available after setup';
+  if (state === 'partial') return 'Needs setup';
   return 'Needs attention';
 }
 

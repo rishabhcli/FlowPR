@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, promises as fs } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 
 export interface RunCommandOptions {
   cwd: string;
@@ -118,23 +118,36 @@ export interface CloneRepoResult {
   remoteUrl: string;
 }
 
-function buildRemoteUrl(repoUrl: string, authToken?: string): string {
-  if (!authToken) return repoUrl;
-
+export function sanitizeRemoteUrl(repoUrl: string): string {
   if (repoUrl.startsWith('git@')) return repoUrl;
 
   try {
     const parsed = new URL(repoUrl);
-
-    if (parsed.protocol !== 'https:') return repoUrl;
-
-    parsed.username = 'x-access-token';
-    parsed.password = authToken;
-
+    parsed.username = '';
+    parsed.password = '';
+    parsed.search = '';
+    parsed.hash = '';
     return parsed.toString();
   } catch {
     return repoUrl;
   }
+}
+
+function buildCloneAuthEnv(repoUrl: string, authToken?: string): Record<string, string> | undefined {
+  if (!authToken) return undefined;
+
+  try {
+    if (new URL(repoUrl).protocol !== 'https:') return undefined;
+  } catch {
+    return undefined;
+  }
+
+  return {
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'http.extraHeader',
+    GIT_CONFIG_VALUE_0: `Authorization: Bearer ${authToken}`,
+    GIT_TERMINAL_PROMPT: '0',
+  };
 }
 
 export async function ensureWorkspaceRoot(root?: string): Promise<string> {
@@ -150,12 +163,12 @@ export async function ensureWorkspaceRoot(root?: string): Promise<string> {
 export async function cloneRepo(input: CloneRepoInput): Promise<CloneRepoResult> {
   const workspaceRoot = await ensureWorkspaceRoot(input.workspaceRoot);
   const dir = join(workspaceRoot, input.runId);
+  const remoteUrl = sanitizeRemoteUrl(input.repoUrl);
 
   if (existsSync(dir)) {
     await fs.rm(dir, { recursive: true, force: true });
   }
 
-  const remoteUrl = buildRemoteUrl(input.repoUrl, input.authToken);
   const args = ['clone', '--branch', input.baseBranch, '--single-branch'];
 
   if (input.depth && input.depth > 0) {
@@ -163,7 +176,12 @@ export async function cloneRepo(input: CloneRepoInput): Promise<CloneRepoResult>
   }
 
   args.push(remoteUrl, dir);
-  await runGit(args, { cwd: workspaceRoot, timeoutMs: 180000 });
+  await runGit(args, {
+    cwd: workspaceRoot,
+    timeoutMs: 180000,
+    env: buildCloneAuthEnv(remoteUrl, input.authToken),
+  });
+  await runGit(['remote', 'set-url', 'origin', remoteUrl], { cwd: dir, timeoutMs: 15000 });
   const rev = await runGit(['rev-parse', 'HEAD'], { cwd: dir, timeoutMs: 15000 });
 
   return {
@@ -282,17 +300,49 @@ export interface WriteWorkspaceFileInput {
   content: string;
 }
 
+function workspaceTarget(dir: string, path: string): string {
+  const root = resolve(dir);
+  const target = resolve(root, path);
+
+  if (target !== root && !target.startsWith(`${root}${sep}`)) {
+    throw new Error(`Workspace path escapes the checkout: ${path}`);
+  }
+
+  return target;
+}
+
+function isInsideWorkspace(root: string, target: string): boolean {
+  return target === root || target.startsWith(`${root}${sep}`);
+}
+
+async function assertWorkspaceTarget(dir: string, target: string): Promise<void> {
+  const root = await fs.realpath(dir);
+  let resolvedTarget: string;
+
+  try {
+    resolvedTarget = await fs.realpath(target);
+  } catch {
+    resolvedTarget = await fs.realpath(dirname(target));
+  }
+
+  if (!isInsideWorkspace(root, resolvedTarget)) {
+    throw new Error(`Workspace path escapes the checkout: ${target}`);
+  }
+}
+
 export async function writeWorkspaceFile(input: WriteWorkspaceFileInput): Promise<void> {
-  const target = join(input.dir, input.path);
+  const target = workspaceTarget(input.dir, input.path);
   await fs.mkdir(dirname(target), { recursive: true });
+  await assertWorkspaceTarget(input.dir, target);
   await fs.writeFile(target, input.content, 'utf8');
 }
 
 export async function readWorkspaceFile(dir: string, path: string): Promise<string | undefined> {
-  const target = join(dir, path);
+  const target = workspaceTarget(dir, path);
 
   if (!existsSync(target)) return undefined;
 
+  await assertWorkspaceTarget(dir, target);
   return fs.readFile(target, 'utf8');
 }
 

@@ -8,6 +8,7 @@ import {
 import {
   getRun,
 } from '@flowpr/tools/insforge';
+import { getOwnerKey } from '@/lib/session';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -17,10 +18,12 @@ function getErrorMessage(error: unknown): string {
 }
 
 export async function POST(_request: Request, context: { params: Promise<{ id: string }> }) {
+  const ownerKey = await getOwnerKey();
+  if (!ownerKey) return NextResponse.json({ error: 'Sign in to rerun verification.' }, { status: 401 });
   const { id } = await context.params;
 
   try {
-    const run = await getRun(id);
+    const run = await getRun(id, ownerKey);
 
     if (!run) {
       return NextResponse.json({ error: 'Run not found' }, { status: 404 });

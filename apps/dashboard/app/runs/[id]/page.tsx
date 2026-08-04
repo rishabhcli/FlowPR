@@ -6,7 +6,10 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowUpRight,
+  Ban,
   Clock,
+  Download,
+  FileJson,
   GitBranch,
   Loader2,
   RefreshCw,
@@ -49,6 +52,7 @@ import {
   computePhaseDurations,
   formatDurationShort,
 } from '@/lib/phase-durations';
+import { selectLocalVerification } from '@/lib/verification';
 
 interface ReadinessResponse extends ReadinessSummary {
   runId: string;
@@ -65,6 +69,9 @@ export default function RunDetailPage({
   const [error, setError] = useState<string>();
   const [rerunning, setRerunning] = useState(false);
   const [rerunMessage, setRerunMessage] = useState<string>();
+  const [recovering, setRecovering] = useState(false);
+
+  const exportHref = (format: 'markdown' | 'json') => `/api/runs/${id}/export?format=${format}`;
 
   async function rerunVerification() {
     setRerunning(true);
@@ -87,6 +94,23 @@ export default function RunDetailPage({
       );
     } finally {
       setRerunning(false);
+    }
+  }
+
+  async function recoverRun(action: 'retry' | 'cancel') {
+    if (action === 'cancel' && !window.confirm('Cancel this run and mark it for review?')) return;
+    setRecovering(true);
+    setRerunMessage(undefined);
+    try {
+      const response = await fetch(`/api/runs/${id}/${action}`, { method: 'POST' });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? `Could not ${action} run (${response.status})`);
+      setRerunMessage(action === 'retry' ? 'Run requeued. The worker will pick up a fresh attempt.' : 'Run cancelled and marked for review.');
+      await load();
+    } catch (recoveryError) {
+      setRerunMessage(recoveryError instanceof Error ? recoveryError.message : String(recoveryError));
+    } finally {
+      setRecovering(false);
     }
   }
 
@@ -218,6 +242,7 @@ export default function RunDetailPage({
   }
 
   const { run } = detail;
+  const runtimeWarning = (detail as RunDetail & { runtimeWarning?: string }).runtimeWarning;
   const evidenceIntegrityIssues = validateRunEvidenceIntegrity(detail);
   const dangerEvidenceIntegrityIssues = evidenceIntegrityIssues.filter(
     (issue) => issue.severity === 'danger',
@@ -231,9 +256,7 @@ export default function RunDetailPage({
   const liveVerification = detail.verificationResults.find(
     (result) => result.provider === 'tinyfish-live',
   );
-  const localVerification = detail.verificationResults.find(
-    (result) => result.provider === 'local',
-  );
+  const localVerification = selectLocalVerification(detail.verificationResults);
   const localPlaywrightPassed = hasPassedLocalPlaywrightObservation(detail.browserObservations);
   const isIgnoredObservation = (obs: (typeof detail.browserObservations)[number]) =>
     isIgnoredRemoteLocalhostObservation(run.previewUrl, detail.browserObservations, obs);
@@ -345,7 +368,7 @@ export default function RunDetailPage({
               </div>
 
               <div className="flex flex-col items-end gap-2">
-                <div className="flex gap-2">
+                <div className="flex flex-wrap justify-end gap-2">
                   <StateBadge state={run.status} label={labelRunStatus(run.status)} />
                   <StateBadge state={run.riskLevel} label={labelRiskLevel(run.riskLevel)} />
                 </div>
@@ -370,11 +393,41 @@ export default function RunDetailPage({
                     )}
                     Re-run verification
                   </Button>
+                  <Button asChild variant="outline" size="default">
+                    <a href={exportHref('markdown')} download>
+                      <Download className="h-3.5 w-3.5" /> Export evidence
+                    </a>
+                  </Button>
+                  <Button asChild variant="ghost" size="default">
+                    <a href={exportHref('json')} download title="Download the structured evidence packet">
+                      <FileJson className="h-3.5 w-3.5" /> JSON
+                    </a>
+                  </Button>
+                  {run.status === 'failed' && (
+                    <Button variant="outline" size="default" onClick={() => recoverRun('retry')} disabled={recovering}>
+                      {recovering ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />} Retry run
+                    </Button>
+                  )}
+                  {!runFinished && (
+                    <Button variant="ghost" size="default" onClick={() => recoverRun('cancel')} disabled={recovering}>
+                      <Ban className="h-3.5 w-3.5" /> Cancel run
+                    </Button>
+                  )}
                 </div>
               </div>
             </div>
 
             <OutcomeHero detail={detail} />
+
+            {runtimeWarning && (
+              <Alert variant="warning">
+                <AlertTriangle className="h-4 w-4" />
+                <AlertTitle>Runtime enrichment is unavailable</AlertTitle>
+                <AlertDescription>
+                  The persisted run is available, but live Redis streams are not connected: {runtimeWarning} Exported evidence remains based on the durable run record.
+                </AlertDescription>
+              </Alert>
+            )}
 
             {evidenceIntegrityIssues.length > 0 && (
               <Alert

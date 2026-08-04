@@ -2,6 +2,7 @@ import type { RedisClientType } from 'redis';
 import type { BrowserObservation, BrowserObservationResult, FlowPrRun, PatchRecord, RunStatus } from '@flowpr/schemas';
 import {
   hasPassedLocalPlaywrightObservation,
+  isOperatorCancelledRun,
   isLocalPreviewUrl,
   isRemoteLocalhostReachabilityObservation,
   runStatusLabels,
@@ -80,7 +81,7 @@ import {
   type PolicyContext as TriagePolicyContext,
   type TriageOutput,
 } from './agents/visual-triage';
-import { generateDemoCookieBannerPatch } from './agents/patcher';
+import { generateDemoCookieBannerPatch, isSeededDemoPatchAllowed } from './agents/patcher';
 import {
   generateLlmPatch,
   isLlmPatcherAvailable,
@@ -246,6 +247,28 @@ async function appendRedisTimeline(
       ...data,
     },
   });
+}
+
+async function skipOperatorCancelledEvent(
+  redis: RedisClientType,
+  event: FlowPrRedisEvent,
+  run: FlowPrRun,
+): Promise<boolean> {
+  if (!isOperatorCancelledRun(run)) return false;
+
+  await appendRedisTimeline(
+    event,
+    event.phase ?? 'queue',
+    'skipped',
+    'Cancelled run event ignored by the worker.',
+    { currentStatus: run.status, cancellation: 'operator' },
+  );
+  await recordRedisArtifact(event, 'cancelled_event_skipped', {
+    currentStatus: run.status,
+    cancellation: 'operator',
+  });
+  await persistRedisState(redis, event, 'failed', { cancelled: true });
+  return true;
 }
 
 async function emitNextStep(
@@ -445,6 +468,10 @@ function networkRecords(values: BrowserObservationResult['networkErrors']): Reco
   return values.map((failure) => ({ ...failure }));
 }
 
+function hasTinyFishApiKey(): boolean {
+  return Boolean(process.env.TINYFISH_API_KEY?.trim());
+}
+
 function observationStatus(passed: boolean, errored = false): 'passed' | 'failed' | 'errored' {
   if (errored) return 'errored';
   return passed ? 'passed' : 'failed';
@@ -561,6 +588,48 @@ async function recordTinyFishAgentFlow(
     },
   });
 
+}
+
+async function recordTinyFishSkipped(
+  run: FlowPrRun,
+  event: FlowPrRedisEvent,
+): Promise<void> {
+  const reason = 'TinyFish is not configured; FlowPR is using local Playwright evidence for this run.';
+
+  await appendTimelineEvent({
+    runId: run.id,
+    actor: 'tinyfish',
+    phase: 'running_browser_qa',
+    status: 'skipped',
+    title: 'TinyFish live browser QA skipped; local Playwright proof remains active.',
+    data: {
+      configured: false,
+      reason,
+      streamId: event.id,
+    },
+  });
+
+  await recordProviderArtifact({
+    runId: run.id,
+    sponsor: 'tinyfish',
+    artifactType: 'browser_flow_skipped',
+    requestSummary: {
+      previewUrl: run.previewUrl,
+      flowGoal: run.flowGoal,
+      api: 'agent.stream',
+      streamId: event.id,
+    },
+    responseSummary: {
+      status: 'skipped',
+      configured: false,
+      reason,
+    },
+    raw: {
+      skipped: true,
+      reason,
+      source: 'configuration',
+    },
+  });
 }
 
 async function recordPlaywrightEvidence(
@@ -812,40 +881,47 @@ async function runBrowserQa(
     },
   });
 
-  const flow = await runAgentFlow({
-    runId: run.id,
-    previewUrl: run.previewUrl,
-    flowGoal: run.flowGoal,
-    maxAttempts: 2,
-    onProgress: (progressEvent) => {
-      const eventType = progressEvent.type;
-      if (progressEvent.streamingUrl) {
-        void writeLiveStream(redis, {
+  const tinyfishConfigured = hasTinyFishApiKey();
+  let flow: TinyFishAgentFlowResult | undefined;
+
+  if (tinyfishConfigured) {
+    flow = await runAgentFlow({
+      runId: run.id,
+      previewUrl: run.previewUrl,
+      flowGoal: run.flowGoal,
+      maxAttempts: 2,
+      onProgress: (progressEvent) => {
+        const eventType = progressEvent.type;
+        if (progressEvent.streamingUrl) {
+          void writeLiveStream(redis, {
+            runId: run.id,
+            provider: 'tinyfish',
+            providerRunId: progressEvent.runId,
+            streamingUrl: progressEvent.streamingUrl,
+          }).catch(() => undefined);
+        }
+        void emitProgressEvent(redis, {
           runId: run.id,
-          provider: 'tinyfish',
-          providerRunId: progressEvent.runId,
-          streamingUrl: progressEvent.streamingUrl,
+          kind: 'browser_step',
+          actor: 'tinyfish',
+          phase: 'running_browser_qa',
+          message:
+            progressEvent.purpose ??
+            (progressEvent.streamingUrl
+              ? 'TinyFish browser session is live.'
+              : `TinyFish ${String(eventType).toLowerCase()}`),
+          extra: {
+            eventType: String(eventType),
+            providerRunId: progressEvent.runId,
+            streamingUrl: progressEvent.streamingUrl,
+          },
         }).catch(() => undefined);
-      }
-      void emitProgressEvent(redis, {
-        runId: run.id,
-        kind: 'browser_step',
-        actor: 'tinyfish',
-        phase: 'running_browser_qa',
-        message:
-          progressEvent.purpose ??
-          (progressEvent.streamingUrl
-            ? 'TinyFish browser session is live.'
-            : `TinyFish ${String(eventType).toLowerCase()}`),
-        extra: {
-          eventType: String(eventType),
-          providerRunId: progressEvent.runId,
-          streamingUrl: progressEvent.streamingUrl,
-        },
-      }).catch(() => undefined);
-    },
-  });
-  await recordTinyFishAgentFlow(run, event, flow);
+      },
+    });
+    await recordTinyFishAgentFlow(run, event, flow);
+  } else {
+    await recordTinyFishSkipped(run, event);
+  }
 
   const localResult = await runLocalFlowTest({
     runId: run.id,
@@ -855,21 +931,24 @@ async function runBrowserQa(
   });
   await recordPlaywrightEvidence(run, event, localResult);
 
-  await recordTinyFishBrowserSessionEvidence(run, event);
+  if (tinyfishConfigured) {
+    await recordTinyFishBrowserSessionEvidence(run, event);
+  }
 
   await recordBenchmarkEvaluation({
     runId: run.id,
     sponsor: 'tinyfish',
     benchmarkName: 'phase4_tinyfish_live_browser_qa',
-    score: flow.observation.passed ? 1 : 0,
-    status: flow.observation.passed ? 'passed' : 'failed',
+    score: flow ? (flow.observation.passed ? 1 : 0) : undefined,
+    status: flow ? (flow.observation.passed ? 'passed' : 'failed') : 'skipped',
     metrics: {
-      tinyfishStatus: flow.status,
-      tinyfishAttempts: flow.attempts,
-      progressEvents: flow.progressEvents.length,
-      hasProviderRunId: Boolean(flow.providerRunId),
-      hasStreamingUrl: Boolean(flow.streamingUrl),
-      hasScreenshot: Boolean(flow.observation.screenshots[0] ?? localResult.screenshotUrl),
+      tinyfishConfigured,
+      tinyfishStatus: flow?.status ?? 'SKIPPED',
+      tinyfishAttempts: flow?.attempts ?? 0,
+      progressEvents: flow?.progressEvents.length ?? 0,
+      hasProviderRunId: Boolean(flow?.providerRunId),
+      hasStreamingUrl: Boolean(flow?.streamingUrl),
+      hasScreenshot: Boolean(flow?.observation.screenshots[0] ?? localResult.screenshotUrl),
     },
     raw: {
       flow,
@@ -878,14 +957,14 @@ async function runBrowserQa(
   });
 
   return {
-    providerRunId: flow.providerRunId,
-    status: String(flow.status),
-    tinyfishPassed: flow.observation.passed,
+    providerRunId: flow?.providerRunId,
+    status: flow ? String(flow.status) : 'SKIPPED',
+    tinyfishPassed: flow?.observation.passed ?? false,
     playwrightPassed: localResult.passed,
-    screenshotUrl: flow.observation.screenshots[0] ?? localResult.screenshotUrl,
+    screenshotUrl: flow?.observation.screenshots[0] ?? localResult.screenshotUrl,
     traceUrl: localResult.traceUrl,
-    failureSummary: flow.observation.visibleError
-      ?? flow.observation.likelyRootCause
+    failureSummary: flow?.observation.visibleError
+      ?? flow?.observation.likelyRootCause
       ?? localResult.visibleError
       ?? localResult.likelyRootCause,
   };
@@ -904,6 +983,11 @@ async function handleRunStarted(redis: RedisClientType, event: FlowPrRedisEvent)
 
     if (!run) {
       throw new Error(`Run ${event.runId} was not found in InsForge`);
+    }
+
+    if (await skipOperatorCancelledEvent(redis, event, run)) {
+      await completeIdempotentOperation(redis, event.dedupeKey);
+      return;
     }
 
     await appendRedisTimeline(event, 'queue', 'completed', 'FlowPR received the run and is about to start.', {
@@ -1404,9 +1488,44 @@ async function handlePatchingCode(redis: RedisClientType, run: FlowPrRun, event:
     const patchStart = Date.now();
     const githubAuthToken = await getGitHubAuthToken({ owner: run.owner, repo: run.repo });
     const llmAvailable = isLlmPatcherAvailable();
+    const demoPatchAllowed = isSeededDemoPatchAllowed({
+      repoUrl: run.repoUrl,
+      previewUrl: run.previewUrl,
+      triage,
+    });
     let patchProvider: 'anthropic' | 'demo' = 'demo';
     let llmFallbackReason: string | undefined;
     let patchResult: Awaited<ReturnType<typeof generateDemoCookieBannerPatch>>;
+
+    const skipPatch = async (reason: string): Promise<void> => {
+      const summary = `FlowPR did not change source: ${reason}`;
+      const patchRecord = await recordPatch({
+        runId: run.id,
+        hypothesisId: hypothesis.id,
+        status: 'abandoned',
+        summary,
+        diffStat: {},
+        filesChanged: [],
+        raw: {
+          patcher: 'none',
+          reason,
+          llmConfigured: llmAvailable,
+          seededDemoPatchAllowed: demoPatchAllowed,
+        },
+      });
+
+      await appendRedisTimeline(event, 'patching_code', 'skipped', summary, {
+        lockKey,
+        patcher: 'none',
+        reason,
+      });
+      await persistRedisState(redis, event, 'patching_code', {
+        patchId: patchRecord.id,
+        patcher: 'none',
+        reason: 'patcher-unavailable',
+      });
+      await emitNextStep(redis, event, 'running_local_tests', 'No patch was generated; local verification will be skipped.');
+    };
 
     if (llmAvailable) {
       try {
@@ -1422,7 +1541,12 @@ async function handlePatchingCode(redis: RedisClientType, run: FlowPrRun, event:
       } catch (error) {
         if (error instanceof LlmPatcherUnavailableError || error instanceof LlmPatchProposalError) {
           llmFallbackReason = error.message;
-          console.warn(`[flowpr] LLM patcher fell back to demo patcher: ${error.message}`);
+          if (!demoPatchAllowed) {
+            await skipPatch(`The Anthropic patcher was unavailable (${error.message}), and the seeded demo fallback is restricted to the FlowPR mobile cookie-banner demo.`);
+            return;
+          }
+
+          console.warn(`[flowpr] LLM patcher fell back to the seeded demo patcher: ${error.message}`);
           patchResult = await generateDemoCookieBannerPatch({
             runId: run.id,
             repoUrl: run.repoUrl,
@@ -1436,6 +1560,11 @@ async function handlePatchingCode(redis: RedisClientType, run: FlowPrRun, event:
         }
       }
     } else {
+      if (!demoPatchAllowed) {
+        await skipPatch('ANTHROPIC_API_KEY is not configured, and the seeded demo fallback is restricted to the FlowPR mobile cookie-banner demo.');
+        return;
+      }
+
       patchResult = await generateDemoCookieBannerPatch({
         runId: run.id,
         repoUrl: run.repoUrl,
@@ -1567,7 +1696,9 @@ async function handlePatchingCode(redis: RedisClientType, run: FlowPrRun, event:
       event,
       'patching_code',
       'completed',
-      patchProvider === 'anthropic'
+      patchResult.raw.sourceAlreadyClean === true
+        ? `The base branch already contains the diagnosed fix; added a focused regression test on branch ${patchResult.plan.branchName}.`
+        : patchProvider === 'anthropic'
         ? `Claude Sonnet drafted a focused patch on branch ${patchResult.plan.branchName}.`
         : `Prepared a focused patch on branch ${patchResult.plan.branchName}.`,
       {
@@ -1730,7 +1861,7 @@ async function handleRunningLiveVerification(
   ) {
     overallStatus = 'passed';
   } else if (liveResult.status === 'skipped' && localStatus === 'passed') {
-    overallStatus = 'passed';
+    overallStatus = 'skipped';
   } else if (liveResult.status === 'errored') {
     overallStatus = 'errored';
   } else if (liveResult.status === 'skipped') {
@@ -2525,6 +2656,11 @@ async function handleAgentStep(redis: RedisClientType, event: FlowPrRedisEvent):
       throw new Error(`Run ${event.runId} was not found in InsForge`);
     }
 
+    if (await skipOperatorCancelledEvent(redis, event, run)) {
+      await completeIdempotentOperation(redis, event.dedupeKey);
+      return;
+    }
+
     switch (event.phase) {
       case 'loading_repo':
         await handleLoadingRepo(redis, run, event);
@@ -2597,6 +2733,11 @@ async function handleDomainEvent(redis: RedisClientType, event: FlowPrRedisEvent
 
     if (!run) {
       throw new Error(`Run ${event.runId} was not found in InsForge`);
+    }
+
+    if (await skipOperatorCancelledEvent(redis, event, run)) {
+      await completeIdempotentOperation(redis, event.dedupeKey);
+      return;
     }
 
     await appendRedisTimeline(event, 'redis_domain_event', 'completed', 'Recorded a progress event.', {

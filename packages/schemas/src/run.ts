@@ -51,6 +51,7 @@ export const permissionProfiles: PermissionProfile[] = [
 
 export interface FlowPrRun {
   id: string;
+  ownerKey?: string;
   projectId: string;
   repoUrl: string;
   owner: string;
@@ -72,13 +73,53 @@ export interface FlowPrRun {
   updatedAt: string;
 }
 
+export const FLOWPR_OPERATOR_CANCELLATION_SUMMARY = 'Cancelled by an operator from the FlowPR dashboard.';
+
+export function isOperatorCancelledRun(
+  run: Pick<FlowPrRun, 'status' | 'failureSummary'>,
+): boolean {
+  return run.status === 'failed' && run.failureSummary === FLOWPR_OPERATOR_CANCELLATION_SUMMARY;
+}
+
 export interface RunStartInput {
+  ownerKey?: string;
   repoUrl: string;
   previewUrl: string;
   flowGoal: string;
   baseBranch: string;
   riskLevel: RiskLevel;
   permissionProfile: PermissionProfile;
+}
+
+export interface FlowProfile {
+  id: string;
+  name: string;
+  description?: string;
+  repoUrl: string;
+  previewUrl: string;
+  baseBranch: string;
+  flowGoal: string;
+  riskLevel: RiskLevel;
+  permissionProfile: PermissionProfile;
+  tags: string[];
+  enabled: boolean;
+  runCount: number;
+  lastRunAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FlowProfileInput {
+  name: string;
+  description?: string;
+  repoUrl: string;
+  previewUrl: string;
+  baseBranch: string;
+  flowGoal: string;
+  riskLevel: RiskLevel;
+  permissionProfile: PermissionProfile;
+  tags?: string[];
+  enabled?: boolean;
 }
 
 export interface GitHubRepoRef {
@@ -719,6 +760,42 @@ export function parseRunStartInput(input: unknown): RunStartInput {
     baseBranch,
     riskLevel: riskLevel as RiskLevel,
     permissionProfile: permissionProfile as PermissionProfile,
+  };
+}
+
+export function parseFlowProfileInput(input: unknown): FlowProfileInput {
+  if (!input || typeof input !== 'object') {
+    throw new Error('Request body must be an object');
+  }
+
+  const value = input as Record<string, unknown>;
+  const name = requiredString(value.name, 'name');
+  if (name.length > 80) throw new Error('name must be 80 characters or fewer');
+
+  const description = value.description === undefined || value.description === null
+    ? undefined
+    : typeof value.description === 'string'
+      ? value.description.trim()
+      : requiredString(value.description, 'description');
+  if (description && description.length > 240) {
+    throw new Error('description must be 240 characters or fewer');
+  }
+
+  const runInput = parseRunStartInput(value);
+  const tags = Array.isArray(value.tags)
+    ? value.tags
+        .filter((tag): tag is string => typeof tag === 'string')
+        .map((tag) => tag.trim().toLowerCase())
+        .filter(Boolean)
+        .slice(0, 8)
+    : [];
+
+  return {
+    name,
+    description,
+    ...runInput,
+    tags,
+    enabled: value.enabled === undefined ? true : value.enabled === true,
   };
 }
 

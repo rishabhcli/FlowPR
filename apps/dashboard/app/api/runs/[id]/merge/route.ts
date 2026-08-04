@@ -11,6 +11,7 @@ import {
   mergeGitHubPullRequest,
 } from '@flowpr/tools/github';
 import { hasPullRequestArtifact } from '@flowpr/schemas';
+import { getOwnerKey } from '@/lib/session';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -24,10 +25,12 @@ function getErrorMessage(error: unknown): string {
 }
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
+  const ownerKey = await getOwnerKey();
+  if (!ownerKey) return NextResponse.json({ error: 'Sign in to merge a run pull request.' }, { status: 401 });
   const { id } = await context.params;
 
   try {
-    const run = await getRun(id);
+    const run = await getRun(id, ownerKey);
 
     if (!run) {
       return NextResponse.json({ error: 'Run not found' }, { status: 404 });

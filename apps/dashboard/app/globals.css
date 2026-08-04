@@ -4,40 +4,40 @@
 
 @layer base {
   :root {
-    /* Warm-dark palette tuned for FlowPR. */
-    --background: 30 8% 7%;
-    --foreground: 40 30% 94%;
+    /* Neutral command-center palette with mint action and amber attention states. */
+    --background: 220 14% 7%;
+    --foreground: 210 20% 94%;
 
-    --card: 30 10% 10%;
-    --card-foreground: 40 30% 94%;
+    --card: 220 13% 10%;
+    --card-foreground: 210 20% 94%;
 
-    --popover: 30 10% 9%;
-    --popover-foreground: 40 30% 94%;
+    --popover: 220 13% 9%;
+    --popover-foreground: 210 20% 94%;
 
-    --primary: 152 55% 60%;
-    --primary-foreground: 30 20% 8%;
+    --primary: 157 60% 58%;
+    --primary-foreground: 220 24% 8%;
 
-    --secondary: 30 8% 16%;
-    --secondary-foreground: 40 30% 94%;
+    --secondary: 220 11% 16%;
+    --secondary-foreground: 210 20% 94%;
 
-    --muted: 30 6% 14%;
-    --muted-foreground: 32 12% 65%;
+    --muted: 220 10% 14%;
+    --muted-foreground: 215 12% 67%;
 
-    --accent: 30 8% 18%;
-    --accent-foreground: 40 30% 94%;
+    --accent: 220 11% 18%;
+    --accent-foreground: 210 20% 94%;
 
-    --destructive: 10 90% 72%;
-    --destructive-foreground: 0 0% 10%;
+    --destructive: 7 80% 68%;
+    --destructive-foreground: 220 24% 8%;
 
     --success: 152 55% 60%;
-    --success-foreground: 152 40% 10%;
+    --success-foreground: 157 45% 9%;
 
     --warning: 38 85% 66%;
-    --warning-foreground: 30 40% 10%;
+    --warning-foreground: 38 50% 10%;
 
-    --border: 30 8% 20%;
-    --input: 30 8% 18%;
-    --ring: 152 55% 60%;
+    --border: 220 11% 21%;
+    --input: 220 11% 18%;
+    --ring: 157 60% 58%;
 
     --radius: 0.625rem;
   }
@@ -54,7 +54,11 @@
   .font-display {
     /* Geist alternates for a slightly more geometric headline cut. */
     font-feature-settings: 'ss03', 'ss04', 'cv11';
-    letter-spacing: -0.018em;
+    letter-spacing: 0;
+  }
+
+  .tracking-tight {
+    letter-spacing: 0;
   }
 
   * {
@@ -80,11 +84,7 @@
   }
 
   .bg-radial-spot {
-    background: radial-gradient(
-      circle at top,
-      hsl(var(--primary) / 0.14),
-      transparent 55%
-    );
+    background: hsl(var(--primary) / 0.035);
   }
 
   .skeleton-shimmer {

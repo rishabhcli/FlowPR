@@ -6,17 +6,22 @@ import {
 } from '@flowpr/tools/redis';
 import { listRecentRuns } from '@flowpr/tools/insforge';
 import { isRecoverableActiveRunStatus } from '@flowpr/tools/recovery';
+import { getOwnerKey } from '@/lib/session';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  const redis = createFlowPrRedisClient();
+  const ownerKey = await getOwnerKey();
+  if (!ownerKey) return NextResponse.json({ error: 'Sign in to view worker status.' }, { status: 401 });
+
+  let redis: ReturnType<typeof createFlowPrRedisClient> | undefined;
   try {
+    redis = createFlowPrRedisClient();
     await connectFlowPrRedisClient(redis);
     const [heartbeats, runs] = await Promise.all([
       listWorkerHeartbeats(redis),
-      listRecentRuns(100).catch(() => []),
+      listRecentRuns(100, ownerKey).catch(() => []),
     ]);
     const runsById = new Map(runs.map((run) => [run.id, run]));
     const now = Date.now();
@@ -53,7 +58,7 @@ export async function GET() {
       { status: 200 },
     );
   } finally {
-    if (redis.isOpen) {
+    if (redis?.isOpen) {
       await redis.quit().catch(() => undefined);
     }
   }

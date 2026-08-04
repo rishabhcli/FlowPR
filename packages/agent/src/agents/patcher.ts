@@ -1,4 +1,5 @@
 import type { TriageOutput } from './visual-triage';
+import { isLocalPreviewUrl, parseGitHubRepoUrl } from '@flowpr/schemas';
 import {
   cloneRepo,
   commitAll,
@@ -48,6 +49,37 @@ export interface GenerateDemoPatchResult {
   raw: Record<string, unknown>;
 }
 
+const DEMO_STYLES_PATH = 'apps/demo-target/app/styles.css';
+
+export function isSeededDemoPatchAllowed(input: {
+  repoUrl: string;
+  previewUrl: string;
+  triage: Pick<TriageOutput, 'bugType' | 'likelyFiles' | 'hypothesis' | 'suspectedCause'> & {
+    evidence: Pick<TriageOutput['evidence'], 'topDomFinding'>;
+  };
+}): boolean {
+  let repo;
+
+  try {
+    repo = parseGitHubRepoUrl(input.repoUrl);
+  } catch {
+    return false;
+  }
+
+  const evidence = [
+    input.triage.hypothesis,
+    input.triage.suspectedCause,
+    input.triage.evidence.topDomFinding,
+  ].join(' ').toLowerCase();
+
+  return repo.owner.toLowerCase() === 'rishabhcli' &&
+    repo.repo.toLowerCase() === 'flowpr' &&
+    isLocalPreviewUrl(input.previewUrl) &&
+    input.triage.bugType === 'blocked_cta' &&
+    input.triage.likelyFiles.includes(DEMO_STYLES_PATH) &&
+    /cookie|banner|overlay|obstruct/.test(evidence);
+}
+
 function buildBranchName(runId: string, bugType: string): string {
   const slug = bugType.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase() || 'fix';
   const shortId = runId.slice(0, 8);
@@ -73,8 +105,21 @@ function applyCookieBannerFix(css: string): string {
   return fixed;
 }
 
+function hasCookieBannerStackingOrderFix(css: string): boolean {
+  const payButtonZIndex = css.match(/\.pay-button[\s\S]*?z-index:\s*(\d+);/)?.[1];
+  const cookieBannerZIndex = css.match(/\.cookie-banner[\s\S]*?z-index:\s*(\d+);/)?.[1];
+
+  return payButtonZIndex === '30' && cookieBannerZIndex === '12';
+}
+
 function buildRegressionTest(): string {
   return `import { expect, type Locator, type Page, test } from '@playwright/test';
+
+const executablePath = process.env.FLOWPR_PLAYWRIGHT_EXECUTABLE_PATH?.trim();
+
+if (executablePath) {
+  test.use({ launchOptions: { executablePath } });
+}
 
 async function assertElementNotObstructed(page: Page, locator: Locator): Promise<void> {
   const box = await locator.boundingBox();
@@ -134,15 +179,18 @@ export async function generateDemoCookieBannerPatch(
   const branchName = buildBranchName(input.runId, input.triage.bugType);
   await createBranch({ dir: workspace.dir, branchName, baseBranch: input.baseBranch });
 
-  const stylesPath = 'apps/demo-target/app/styles.css';
+  const stylesPath = DEMO_STYLES_PATH;
   const preFixStyles = (await readWorkspaceFile(workspace.dir, stylesPath)) ?? '';
   const postFixStyles = applyCookieBannerFix(preFixStyles);
+  const styleFixApplied = preFixStyles !== postFixStyles;
 
-  if (preFixStyles === postFixStyles) {
-    throw new Error('Cookie banner regex did not match — workspace may already be clean.');
+  if (!styleFixApplied && !hasCookieBannerStackingOrderFix(preFixStyles)) {
+    throw new Error('Cookie banner selectors or stacking-order values were not found in the checked-out source.');
   }
 
-  await writeWorkspaceFile({ dir: workspace.dir, path: stylesPath, content: postFixStyles });
+  if (styleFixApplied) {
+    await writeWorkspaceFile({ dir: workspace.dir, path: stylesPath, content: postFixStyles });
+  }
 
   const regressionTestContent = buildRegressionTest();
   await writeWorkspaceFile({
@@ -151,23 +199,29 @@ export async function generateDemoCookieBannerPatch(
     content: regressionTestContent,
   });
 
+  const planFiles: PatchPlanFile[] = [
+    ...(styleFixApplied
+      ? [{
+          path: stylesPath,
+          action: 'patch' as const,
+          summary: 'Restore stacking order so Pay now sits above the cookie banner on mobile checkout.',
+        }]
+      : []),
+    {
+      path: REGRESSION_TEST_PATH,
+      action: 'create',
+      summary: 'Add Playwright regression test that fails when the CTA is obstructed on mobile.',
+    },
+  ];
+
   const plan: PatchPlan = {
     branchName,
     commitMessage: buildCommitMessage(input.triage),
-    explanation: input.triage.hypothesis,
+    explanation: styleFixApplied
+      ? input.triage.hypothesis
+      : `${input.triage.hypothesis} The base branch already contains the expected stacking-order fix, so FlowPR recorded the source/preview mismatch and added a regression test without fabricating a source-code diff.`,
     testPath: REGRESSION_TEST_PATH,
-    files: [
-      {
-        path: stylesPath,
-        action: 'patch',
-        summary: 'Restore stacking order so Pay now sits above the cookie banner on mobile checkout.',
-      },
-      {
-        path: REGRESSION_TEST_PATH,
-        action: 'create',
-        summary: 'Add Playwright regression test that fails when the CTA is obstructed on mobile.',
-      },
-    ],
+    files: planFiles,
   };
 
   const { commitSha } = await commitAll({
@@ -197,6 +251,8 @@ export async function generateDemoCookieBannerPatch(
       diffStat,
       filesChanged,
       testPath: plan.testPath,
+      styleFixApplied,
+      sourceAlreadyClean: !styleFixApplied,
     },
   };
 }

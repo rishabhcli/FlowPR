@@ -228,6 +228,7 @@ const fallbackVerificationResults = verificationResults.map((result) =>
   result.id === 'verification-live'
     ? {
         ...result,
+        status: 'skipped',
         summary: 'Live verification skipped because TinyFish cannot reach localhost previews and local verification passed.',
         artifacts: [{ providerId: 'tinyfish-live-smoke' }],
       }
@@ -326,7 +327,7 @@ const prBody = renderPullRequestBody({
     ],
   },
   liveVerification: {
-    status: 'passed',
+    status: 'skipped',
     attempts: 0,
     summary: 'Live verification skipped because TinyFish cannot reach localhost previews and local verification passed.',
   },

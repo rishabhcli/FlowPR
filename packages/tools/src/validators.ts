@@ -1,11 +1,14 @@
 import { parseGitHubRepoUrl } from '@flowpr/schemas';
 import { getGitHubRepository, getBranchRef, hasGitHubCredentials } from './github';
+import { loadLocalEnv } from './env';
+import { assertSafeHttpUrl } from './network-safety';
 
 export type ValidationErrorCode =
   | 'repoUrl.invalid'
   | 'repoUrl.notFound'
   | 'previewUrl.invalid'
   | 'previewUrl.unreachable'
+  | 'previewUrl.blocked'
   | 'flowGoal.tooShort'
   | 'flowGoal.noSuccess'
   | 'baseBranch.missing'
@@ -54,6 +57,21 @@ const SUCCESS_KEYWORDS = [
   'checkout complete',
 ];
 
+function blockedPreviewIssue(): ValidationIssue {
+  return {
+    code: 'previewUrl.blocked',
+    field: 'previewUrl',
+    message: 'Preview URL points to a private, loopback, or reserved network address.',
+    suggestion: 'Use a public preview URL. Loopback previews are supported only in explicit local dashboard mode.',
+    severity: 'error',
+  };
+}
+
+async function validatePreviewAddress(previewUrl: string): Promise<ValidationIssue | undefined> {
+  await assertSafeHttpUrl(previewUrl, { requireResolution: true });
+  return undefined;
+}
+
 async function probePreviewUrl(previewUrl: string): Promise<ValidationIssue | undefined> {
   try {
     const parsed = new URL(previewUrl);
@@ -77,14 +95,25 @@ async function probePreviewUrl(previewUrl: string): Promise<ValidationIssue | un
     };
   }
 
+  const addressIssue = await validatePreviewAddress(previewUrl).catch(() => blockedPreviewIssue());
+  if (addressIssue) return addressIssue;
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PREVIEW_PROBE_TIMEOUT_MS);
 
   try {
-    let response = await fetch(previewUrl, { method: 'HEAD', signal: controller.signal }).catch(() => null);
+    let response = await fetch(previewUrl, {
+      method: 'HEAD',
+      redirect: 'manual',
+      signal: controller.signal,
+    }).catch(() => null);
 
     if (!response) {
-      response = await fetch(previewUrl, { method: 'GET', signal: controller.signal }).catch(() => null);
+      response = await fetch(previewUrl, {
+        method: 'GET',
+        redirect: 'manual',
+        signal: controller.signal,
+      }).catch(() => null);
     }
 
     if (!response) {
@@ -221,6 +250,7 @@ async function checkRepoAndBranch(repoUrl: string, baseBranch: string): Promise<
 }
 
 export async function validateRunStartInput(input: ValidationInput): Promise<ValidationResult> {
+  loadLocalEnv();
   const checks = await Promise.all([
     probePreviewUrl(input.previewUrl),
     checkRepoAndBranch(input.repoUrl, input.baseBranch),

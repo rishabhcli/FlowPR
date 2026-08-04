@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
-import { Check, Github, Loader2, RotateCcw, Sparkles, X } from 'lucide-react';
+import { Check, Github, Loader2, Menu, RotateCcw, Sparkles, X } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import { SystemStatusBar } from '@/components/flowpr/system-status-bar';
@@ -57,7 +57,7 @@ export function SiteHeader() {
           </div>
         </Link>
 
-        <nav className="flex items-center gap-1">
+        <nav className="hidden items-center gap-1 sm:flex">
           {links.map((link) => {
             const isActive =
               link.href === '/'
@@ -79,6 +79,27 @@ export function SiteHeader() {
             );
           })}
         </nav>
+
+        <details className="relative sm:hidden">
+          <summary
+            className="flex h-8 w-8 cursor-pointer list-none items-center justify-center rounded-md border border-border/60 text-muted-foreground hover:bg-accent hover:text-foreground"
+            aria-label="Open navigation"
+            title="Open navigation"
+          >
+            <Menu className="h-4 w-4" />
+          </summary>
+          <div className="absolute left-0 top-10 z-50 min-w-44 rounded-md border border-border bg-card p-1 shadow-xl">
+            {links.map((link) => (
+              <Link
+                key={link.href}
+                href={link.href}
+                className="block rounded px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                {link.label}
+              </Link>
+            ))}
+          </div>
+        </details>
 
         <div className="ml-auto flex items-center gap-2">
           <SystemStatusBar className="hidden sm:flex" />

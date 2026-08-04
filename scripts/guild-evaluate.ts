@@ -163,9 +163,9 @@ console.log(`Guild agent metadata valid: ${descriptor.name}@${descriptor.version
 console.log(`Permission profile: ${descriptor.permissionProfile}`);
 
 if (process.env.GUILD_AI_API_KEY) {
-  console.log('Guild live API key configured for control-plane integration.');
+  console.log('Guild API key configured; this evaluator is running local contract checks until remote evaluation is verified.');
 } else if (process.env.GUILD_GITHUB_APP_INSTALLED === 'true') {
-  console.log('Guild GitHub app marked installed; live API key is not configured.');
+  console.log('Guild GitHub app marked installed; local contract checks are running without a remote evaluation call.');
 } else {
   throw new Error('Configure GUILD_AI_API_KEY or set GUILD_GITHUB_APP_INSTALLED=true.');
 }

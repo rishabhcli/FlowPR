@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
 import { getGitHubConnectionForUser } from '@flowpr/tools/github-connections';
+import { getOwnerKey, LOCAL_OWNER_KEY } from '@/lib/session';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -10,14 +10,18 @@ function getErrorMessage(error: unknown): string {
 }
 
 export async function GET() {
-  const cookieStore = await cookies();
-  const session = cookieStore.get('flowpr_session')?.value;
-
-  // Legacy sessions stored the literal string "connected" before we wired the
-  // cookie to the InsForge user id. Treat those as anonymous so the header
-  // falls back to the GitHub icon until the user signs in again.
-  if (!session || session === 'connected') {
+  const session = await getOwnerKey();
+  if (!session) {
     return NextResponse.json({ signedIn: false });
+  }
+
+  if (session === LOCAL_OWNER_KEY) {
+    return NextResponse.json({
+      signedIn: true,
+      localMode: true,
+      userId: LOCAL_OWNER_KEY,
+      githubLogin: 'local workspace',
+    });
   }
 
   try {
@@ -32,9 +36,10 @@ export async function GET() {
       githubAvatarUrl: connection.githubAvatarUrl,
     });
   } catch (error) {
-    return NextResponse.json(
-      { error: getErrorMessage(error) },
-      { status: 500 },
-    );
+    return NextResponse.json({
+      signedIn: true,
+      userId: session,
+      authWarning: getErrorMessage(error),
+    });
   }
 }

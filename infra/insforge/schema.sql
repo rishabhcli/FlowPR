@@ -89,6 +89,7 @@ create trigger projects_set_updated_at
 
 create table if not exists qa_runs (
   id uuid constraint flowpr_qa_runs_pkey primary key default gen_random_uuid(),
+  owner_key text,
   project_id uuid not null constraint qa_runs_project_id_fkey references projects (id) on delete cascade,
   repo_url text not null,
   owner text not null,
@@ -149,16 +150,64 @@ begin
   end if;
 end $$;
 
+do $$
+begin
+  if to_regclass('public.qa_runs') is not null
+    and not exists (
+      select 1
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'qa_runs'
+        and column_name = 'owner_key'
+    )
+  then
+    execute 'alter table public.qa_runs add column owner_key text';
+  end if;
+end $$;
+
 create index if not exists qa_runs_created_at_idx on qa_runs (created_at desc);
 create index if not exists qa_runs_status_idx on qa_runs (status);
 create index if not exists qa_runs_project_created_at_idx on qa_runs (project_id, created_at desc);
 create index if not exists qa_runs_repo_idx on qa_runs (owner, repo);
+create index if not exists qa_runs_owner_key_idx on qa_runs (owner_key, created_at desc);
 
 drop trigger if exists qa_runs_set_updated_at on qa_runs;
 create trigger qa_runs_set_updated_at
   before update on qa_runs
   for each row
   execute function public.flowpr_set_updated_at();
+
+create table if not exists flow_profiles (
+  id uuid constraint flowpr_flow_profiles_pkey primary key default gen_random_uuid(),
+  owner_key text not null check (length(trim(owner_key)) between 1 and 160),
+  name text not null check (length(trim(name)) between 1 and 80),
+  description text,
+  repo_url text not null,
+  preview_url text not null,
+  base_branch text not null default 'main',
+  flow_goal text not null,
+  risk_level text not null check (risk_level in ('low', 'medium', 'high', 'critical')),
+  permission_profile text not null default 'draft-pr-only' check (permission_profile in ('investigation-only', 'draft-pr-only', 'verified-pr')),
+  tags text[] not null default '{}',
+  enabled boolean not null default true,
+  run_count integer not null default 0 check (run_count >= 0),
+  last_run_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint flow_profiles_owner_name_key unique (owner_key, name)
+);
+
+create index if not exists flowpr_flow_profiles_owner_updated_idx on flow_profiles (owner_key, updated_at desc);
+create index if not exists flowpr_flow_profiles_repo_idx on flow_profiles (owner_key, repo_url);
+create unique index if not exists flowpr_flow_profiles_owner_name_lower_idx on flow_profiles (owner_key, lower(name));
+
+drop trigger if exists flow_profiles_set_updated_at on flow_profiles;
+create trigger flow_profiles_set_updated_at
+  before update on flow_profiles
+  for each row
+  execute function public.flowpr_set_updated_at();
+
+comment on table flow_profiles is 'Owner-scoped reusable QA playbooks. Dashboard routes must always filter by owner_key.';
 
 do $$
 begin

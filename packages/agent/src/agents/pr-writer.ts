@@ -77,7 +77,7 @@ function hasLocalProofFallback(input: PullRequestContextInput): boolean {
   return !input.afterScreenshotUrl
     && isLocalPreviewUrl(input.previewUrl)
     && input.localVerification.overallStatus === 'passed'
-    && input.liveVerification?.status === 'passed';
+    && input.liveVerification?.status === 'skipped';
 }
 
 function renderEvidenceChecklist(input: PullRequestContextInput): string {
@@ -140,9 +140,14 @@ function renderResidualRisk(input: PullRequestContextInput): string {
 }
 
 export function renderPullRequestBody(input: PullRequestContextInput): string {
-  return `# FlowPR fix: ${input.triage.bugType.replace(/_/g, ' ')}
+  const sourceAlreadyClean = input.patch.raw?.sourceAlreadyClean === true;
+  const opening = sourceAlreadyClean
+    ? `FlowPR reproduced the reported failure, then found the expected stacking-order fix already present on the base branch. It added a regression test and preserved the source/preview mismatch in this evidence packet.`
+    : `FlowPR detected and repaired \`${input.triage.bugType}\` on flow _${input.flowGoal}_.`;
 
-FlowPR detected and repaired \`${input.triage.bugType}\` on flow _${input.flowGoal}_.
+  return `# FlowPR ${sourceAlreadyClean ? 'source/preview mismatch' : 'fix'}: ${input.triage.bugType.replace(/_/g, ' ')}
+
+${opening}
 
 ## What FlowPR tested
 - Preview URL: \`${input.previewUrl}\`

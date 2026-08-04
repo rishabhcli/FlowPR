@@ -42,6 +42,11 @@ import { useObservabilitySummary } from '@/lib/use-observability';
 type EnvState = 'configured' | 'missing' | 'partial' | 'local_artifact';
 
 interface HealthResponse {
+  runtime: {
+    dataMode: 'local' | 'insforge';
+    localSessionEnabled: boolean;
+    durableStore: string;
+  };
   envReadiness: Record<string, EnvState>;
   sponsorStatuses: SponsorStatus[];
   sponsorError?: string;
@@ -266,6 +271,21 @@ export default function HealthPage() {
               <h1 className="font-display text-balance text-3xl font-semibold leading-tight tracking-tight sm:text-4xl">
                 Workspace connections
               </h1>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                {data ? (
+                  <>
+                    <StateBadge
+                      state={data.runtime.dataMode === 'local' ? 'local_artifact' : 'configured'}
+                      label={data.runtime.dataMode === 'local' ? 'Local durable mode' : 'InsForge durable mode'}
+                    />
+                    {data.runtime.localSessionEnabled && (
+                      <span className="text-xs text-warning">Local sign-in is enabled for this non-production workspace.</span>
+                    )}
+                  </>
+                ) : (
+                  <span className="text-xs text-muted-foreground">Checking runtime…</span>
+                )}
+              </div>
               {data && (
                 <p className="mt-2 text-sm text-muted-foreground">
                   Refreshed {formatRelativeTime(data.generatedAt)} ·{' '}

@@ -176,7 +176,7 @@ function formatEvidenceChecklist(input: {
   const localProofFallback = !afterScreenshot
     && isLocalPreviewUrl(input.previewUrl)
     && input.localVerification?.status === 'passed'
-    && input.liveVerification?.status === 'passed';
+    && input.liveVerification?.status === 'skipped';
   const afterProofDetail = afterScreenshot ?? (
     localProofFallback
       ? `Localhost live verification used local proof fallback: ${input.liveVerification?.summary}`

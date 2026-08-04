@@ -7,6 +7,7 @@ import {
 } from '@flowpr/tools/redis';
 import { listRecentRuns } from '@flowpr/tools/insforge';
 import { classifyStuckRuns, isRecoverableActiveRunStatus } from '@flowpr/tools/recovery';
+import { getOwnerKey } from '@/lib/session';
 import type { FlowPrRun, RunStatus } from '@flowpr/schemas';
 
 export const runtime = 'nodejs';
@@ -102,7 +103,10 @@ function isDeadLetterResolved(entry: DeadLetterEntry, run: FlowPrRun | undefined
 }
 
 export async function GET() {
-  const redis = createFlowPrRedisClient();
+  const ownerKey = await getOwnerKey();
+  if (!ownerKey) return NextResponse.json({ error: 'Sign in to view workspace observability.' }, { status: 401 });
+
+  let redis: ReturnType<typeof createFlowPrRedisClient> | undefined;
   let runs: FlowPrRun[] = [];
   let workersAlive = 0;
   let workerCount = 0;
@@ -118,12 +122,13 @@ export async function GET() {
   let redisError: string | undefined;
 
   try {
-    runs = await listRecentRuns(50);
+    runs = await listRecentRuns(50, ownerKey);
   } catch (error) {
     runsError = error instanceof Error ? error.message : String(error);
   }
 
   try {
+    redis = createFlowPrRedisClient();
     await connectFlowPrRedisClient(redis);
     const heartbeats = await listWorkerHeartbeats(redis);
     const now = Date.now();
@@ -189,7 +194,7 @@ export async function GET() {
   } catch (error) {
     redisError = error instanceof Error ? error.message : String(error);
   } finally {
-    if (redis.isOpen) {
+    if (redis?.isOpen) {
       await redis.quit().catch(() => undefined);
     }
   }

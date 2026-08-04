@@ -5,6 +5,8 @@ import {
   readProgressEvents,
   readLiveStreams,
 } from '@flowpr/tools/redis';
+import { getRun } from '@flowpr/tools/insforge';
+import { getOwnerKey } from '@/lib/session';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -15,21 +17,28 @@ function toSSE(event: string, data: unknown): string {
 
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
+  const ownerKey = await getOwnerKey();
+  if (!ownerKey) return new Response(JSON.stringify({ error: 'Sign in to stream run progress.' }), { status: 401 });
+  if (!(await getRun(id, ownerKey))) {
+    return new Response(JSON.stringify({ error: 'Run not found' }), { status: 404 });
+  }
   const encoder = new TextEncoder();
+  let redis: ReturnType<typeof createFlowPrRedisClient> | undefined;
+  let closed = false;
+  const abort = () => {
+    closed = true;
+    if (redis?.isOpen) {
+      redis.quit().catch(() => undefined);
+    }
+  };
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      const redis = createFlowPrRedisClient();
-      let closed = false;
-      const abort = () => {
-        closed = true;
-        if (redis.isOpen) {
-          redis.quit().catch(() => undefined);
-        }
-      };
-
       try {
+        redis = createFlowPrRedisClient();
         await connectFlowPrRedisClient(redis);
+
+        if (closed) return;
 
         controller.enqueue(encoder.encode(toSSE('connected', { runId: id, at: new Date().toISOString() })));
 
@@ -37,10 +46,12 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
           getProgressHistory(redis, id, 100).catch(() => []),
           readLiveStreams(redis, id).catch(() => []),
         ]);
+        if (closed) return;
         for (const entry of history) {
+          if (closed) return;
           controller.enqueue(encoder.encode(toSSE('progress', { id: entry.id, ...entry.fields })));
         }
-        if (liveStreams.length > 0) {
+        if (!closed && liveStreams.length > 0) {
           controller.enqueue(encoder.encode(toSSE('liveStreams', liveStreams)));
         }
 
@@ -55,18 +66,21 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
             count: 20,
           }).catch((): [] => []);
 
+          if (closed) break;
+
           if (events.length > 0) {
             for (const entry of events) {
+              if (closed) break;
               controller.enqueue(encoder.encode(toSSE('progress', { id: entry.id, ...entry.fields })));
               cursor = entry.id;
             }
             const fresh = await readLiveStreams(redis, id).catch(() => []);
-            if (fresh.length > 0) {
+            if (!closed && fresh.length > 0) {
               controller.enqueue(encoder.encode(toSSE('liveStreams', fresh)));
             }
           }
 
-          if (Date.now() >= nextHeartbeat) {
+          if (!closed && Date.now() >= nextHeartbeat) {
             controller.enqueue(encoder.encode(toSSE('heartbeat', { at: new Date().toISOString() })));
             nextHeartbeat = Date.now() + heartbeatMs;
           }
@@ -88,7 +102,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     },
 
     cancel() {
-      // runtime closes the stream on client disconnect; the polling loop observes the abort via the `closed` flag
+      abort();
     },
   });
 

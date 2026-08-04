@@ -130,7 +130,10 @@ function readConfig(): GuildRuntimeConfig {
 }
 
 function provider(config: GuildRuntimeConfig): 'guildai-live' | 'guildai-local' {
-  return config.apiKey || config.githubAppInstalled ? 'guildai-live' : 'guildai-local';
+  // The current action-gate implementation is in-process. Credentials and an
+  // installed-app marker are configuration evidence, not proof of a remote call.
+  void config;
+  return 'guildai-local';
 }
 
 export function describeAgentVersion(input: { version: string; permissionProfile: GuildPermissionProfile; capabilities: string[] }): GuildAgentVersion {
@@ -167,9 +170,7 @@ export async function startGuildAgentSession(input: {
     agentVersion: input.agentVersion,
     permissionProfile: input.permissionProfile,
     traceId,
-    traceUrl: config.workspace
-      ? `https://guild.ai/${config.workspace}/agents/${encodeURIComponent(input.agentName)}/sessions/${traceId}`
-      : undefined,
+    traceUrl: undefined,
     startedAt,
     provider: provider(config),
   };

@@ -49,7 +49,7 @@ If TinyFish is rate-limited, emphasise:
 
 - Redis retries (look at the dead letter stream row count).
 - `/health` shows the recovery queue: stuck runs, unresolved dead letters, and the exact replay/worker command to run next.
-- InsForge holds the last artifact when the backend is reachable. If the backend is down, FlowPR records an `insforge:local_fallback_store` artifact and persists run detail plus screenshots under the ignored `.flowpr-workspaces/` local store.
+- InsForge holds the last artifact when the backend is reachable. The ignored `.flowpr-workspaces/` local store is used only when `FLOWPR_DATA_MODE=local` is explicitly enabled; outside that mode, an InsForge outage fails the run instead of claiming durable success.
 - `pnpm run:replay <runId> --fail-on-not-ready` reconstructs durable run detail, live Redis progress, worker heartbeats, live stream URLs, and run-specific dead letters without opening the dashboard, then exits nonzero if readiness is missing or partial.
 - Guild.ai session records why the gate stopped or succeeded.
 - PR creation only happens after verification passes and the Guild.ai gate allows it. Otherwise the handoff report is the expected artifact, not a failure.

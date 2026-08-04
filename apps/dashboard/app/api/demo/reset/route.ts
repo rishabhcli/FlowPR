@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { loadLocalEnv } from '@flowpr/tools/env';
+import { getOwnerKey } from '@/lib/session';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -16,6 +18,19 @@ function findRepoRoot(startDir = process.cwd()): string {
 }
 
 export async function POST() {
+  loadLocalEnv();
+  if (process.env.NODE_ENV === 'production' || process.env.FLOWPR_DATA_MODE !== 'local') {
+    return NextResponse.json(
+      { error: 'The demo reset endpoint is available only in local development mode.' },
+      { status: 404 },
+    );
+  }
+
+  const ownerKey = await getOwnerKey();
+  if (!ownerKey) {
+    return NextResponse.json({ error: 'Sign in before resetting the demo.' }, { status: 401 });
+  }
+
   const stylesPath = join(
     findRepoRoot(),
     'apps',

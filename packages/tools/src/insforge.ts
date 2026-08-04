@@ -14,6 +14,8 @@ import type {
   BrowserObservationProvider,
   BrowserObservationStatus,
   BugHypothesis,
+  FlowProfile,
+  FlowProfileInput,
   FlowPrRun,
   HypothesisConfidence,
   PatchRecord,
@@ -54,6 +56,12 @@ import {
   localListProviderArtifacts,
   localListPullRequests,
   localListRecentRuns,
+  localListFlowProfiles,
+  localGetFlowProfile,
+  localCreateFlowProfile,
+  localUpdateFlowProfile,
+  localDeleteFlowProfile,
+  localTouchFlowProfile,
   localListTimelineEvents,
   localListVerificationResults,
   localRecordActionGate,
@@ -72,6 +80,7 @@ import {
   localUpdateRunStatus,
   localUploadRunArtifact,
 } from './local-store';
+import { assertSafeHttpUrl } from './network-safety';
 
 interface InsForgeProjectConfig {
   oss_host?: string;
@@ -94,6 +103,7 @@ interface ProjectRow {
 
 interface RunRow {
   id: string;
+  owner_key?: string | null;
   project_id: string;
   repo_url: string;
   owner: string;
@@ -111,6 +121,25 @@ interface RunRow {
   started_at?: string | null;
   completed_at?: string | null;
   failure_summary?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface FlowProfileRow {
+  id: string;
+  owner_key: string;
+  name: string;
+  description?: string | null;
+  repo_url: string;
+  preview_url: string;
+  base_branch: string;
+  flow_goal: string;
+  risk_level: RiskLevel;
+  permission_profile: PermissionProfile;
+  tags?: string[] | null;
+  enabled: boolean;
+  run_count?: number | null;
+  last_run_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -442,31 +471,23 @@ export interface RunArtifactUploadResult {
 }
 
 let cachedClient: InsForgeClient | undefined;
-let insForgeFallbackReason: string | undefined;
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 function preferLocalStore(): boolean {
   loadLocalEnv();
-  return process.env.FLOWPR_DATA_MODE === 'local' || Boolean(insForgeFallbackReason);
+  return process.env.FLOWPR_DATA_MODE === 'local';
 }
 
 async function withInsForgeFallback<T>(
   remote: () => Promise<T>,
-  local: (error?: unknown) => Promise<T>,
+  local: () => Promise<T>,
 ): Promise<T> {
   if (preferLocalStore()) {
-    return local(insForgeFallbackReason);
+    return local();
   }
 
-  try {
-    return await remote();
-  } catch (error) {
-    insForgeFallbackReason = getErrorMessage(error);
-    return local(error);
-  }
+  // Local persistence is opt-in. A remote failure must reach the caller so a
+  // production outage cannot become an unannounced local-success path.
+  return remote();
 }
 
 function readProjectConfig(): InsForgeProjectConfig {
@@ -563,11 +584,57 @@ function extractStorageKey(keyOrUrl: string): string {
   return keyOrUrl;
 }
 
+function isInsForgeArtifactUrl(value: string, baseUrl: string): boolean {
+  try {
+    const target = new URL(value);
+    const base = new URL(baseUrl);
+    const basePath = base.pathname.replace(/\/+$/, '');
+    const objectPrefix = `${basePath || ''}/api/storage/buckets/${artifactStorageBucket}/objects/`;
+    return target.origin === base.origin && target.pathname.startsWith(objectPrefix);
+  } catch {
+    return false;
+  }
+}
+
+async function fetchSafeArtifactUrl(
+  inputUrl: string,
+  headers: Record<string, string>,
+  includeHeaders: boolean,
+): Promise<Response> {
+  let current = await assertSafeHttpUrl(inputUrl, { requireResolution: true });
+
+  for (let redirectCount = 0; redirectCount <= 3; redirectCount += 1) {
+    const response = await fetch(current, {
+      headers: redirectCount === 0 && includeHeaders ? headers : {},
+      redirect: 'manual',
+    });
+
+    if (response.status < 300 || response.status >= 400) return response;
+
+    const location = response.headers.get('location');
+    await response.body?.cancel().catch(() => undefined);
+    if (!location) return response;
+    if (redirectCount === 3) {
+      throw new Error('Artifact URL followed too many redirects.');
+    }
+
+    current = await assertSafeHttpUrl(new URL(location, current).toString(), {
+      requireResolution: true,
+    });
+  }
+
+  throw new Error('Artifact URL followed too many redirects.');
+}
+
 export async function downloadRunArtifact(
   keyOrUrl: string,
 ): Promise<DownloadRunArtifactResult> {
   const key = extractStorageKey(keyOrUrl);
   const isHttpInput = /^https?:\/\//i.test(keyOrUrl);
+
+  if (isHttpInput) {
+    await assertSafeHttpUrl(keyOrUrl, { requireResolution: true });
+  }
 
   if (preferLocalStore() && !isHttpInput) {
     try {
@@ -602,21 +669,23 @@ export async function downloadRunArtifact(
   let config: ReturnType<typeof getInsForgeConfig>;
   try {
     config = getInsForgeConfig();
-  } catch {
-    return localDownloadRunArtifact(keyOrUrl);
+  } catch (error) {
+    if (preferLocalStore()) return localDownloadRunArtifact(keyOrUrl);
+    throw error;
   }
   const { baseUrl, anonKey } = config;
   const trimmedBase = baseUrl.replace(/\/+$/, '');
   const url = isHttpInput
     ? keyOrUrl
     : `${trimmedBase}/api/storage/buckets/${artifactStorageBucket}/objects/${encodeURIComponent(key)}`;
+  const isInsForgeUrl = !isHttpInput || isInsForgeArtifactUrl(url, trimmedBase);
 
   const apiKey = process.env.INSFORGE_API_KEY;
   const headerSets: Array<Record<string, string>> = [];
-  if (apiKey) {
+  if (isInsForgeUrl && apiKey) {
     headerSets.push({ Authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey });
   }
-  if (anonKey && anonKey !== apiKey) {
+  if (isInsForgeUrl && anonKey && anonKey !== apiKey) {
     headerSets.push({ Authorization: `Bearer ${anonKey}`, 'x-api-key': anonKey });
   }
   headerSets.push({});
@@ -624,7 +693,7 @@ export async function downloadRunArtifact(
   let lastStatus = 0;
   let lastStatusText = '';
   for (const headers of headerSets) {
-    const response = await fetch(url, { headers });
+    const response = await fetchSafeArtifactUrl(url, headers, isInsForgeUrl);
     if (response.ok) {
       const buffer = await response.arrayBuffer();
       return {
@@ -640,13 +709,15 @@ export async function downloadRunArtifact(
     lastStatusText = response.statusText;
   }
 
-  try {
-    return await localDownloadRunArtifact(keyOrUrl);
-  } catch {
-    throw new Error(
-      `downloadRunArtifact failed: ${lastStatus} ${lastStatusText}`,
-    );
+  if (preferLocalStore()) {
+    try {
+      return await localDownloadRunArtifact(keyOrUrl);
+    } catch {
+      // Preserve the remote failure when no local artifact exists.
+    }
   }
+
+  throw new Error(`downloadRunArtifact failed: ${lastStatus} ${lastStatusText}`);
 }
 
 export async function uploadRunArtifact(input: RunArtifactUploadInput): Promise<RunArtifactUploadResult> {
@@ -724,6 +795,7 @@ function jsonRecordArray(value: unknown): JsonRecordArray {
 function mapRun(row: RunRow): FlowPrRun {
   return {
     id: row.id,
+    ownerKey: row.owner_key ?? undefined,
     projectId: row.project_id,
     repoUrl: row.repo_url,
     owner: row.owner,
@@ -741,6 +813,26 @@ function mapRun(row: RunRow): FlowPrRun {
     startedAt: row.started_at ?? undefined,
     completedAt: row.completed_at ?? undefined,
     failureSummary: row.failure_summary ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapFlowProfile(row: FlowProfileRow): FlowProfile {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description ?? undefined,
+    repoUrl: row.repo_url,
+    previewUrl: row.preview_url,
+    baseBranch: row.base_branch,
+    flowGoal: row.flow_goal,
+    riskLevel: row.risk_level,
+    permissionProfile: row.permission_profile,
+    tags: Array.isArray(row.tags) ? row.tags : [],
+    enabled: row.enabled,
+    runCount: row.run_count ?? 0,
+    lastRunAt: row.last_run_at ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -1024,6 +1116,7 @@ export async function createRun(input: RunStartInput): Promise<FlowPrRun> {
       const project = await ensureProject(client, input);
       const row = {
         id: randomUUID(),
+        owner_key: input.ownerKey ?? null,
         project_id: project.id,
         repo_url: input.repoUrl,
         owner: repoRef.owner,
@@ -1092,44 +1185,175 @@ export async function createRun(input: RunStartInput): Promise<FlowPrRun> {
 
       return run;
     },
-    (error) => localCreateRun(input, error ? getErrorMessage(error) : undefined),
+    () => localCreateRun(input),
   );
 }
 
-export async function getRun(runId: string): Promise<FlowPrRun | null> {
+export async function getRun(runId: string, ownerKey?: string): Promise<FlowPrRun | null> {
   return withInsForgeFallback(
     async () => {
       const client = await getInsForgeClient();
-      const { data, error } = await client.database.from('qa_runs').select('*').eq('id', runId).maybeSingle();
+      let query = client.database.from('qa_runs').select('*').eq('id', runId);
+      if (ownerKey) query = query.eq('owner_key', ownerKey);
+      const { data, error } = await query.maybeSingle();
       throwIfError(error, 'getRun');
 
       return data ? mapRun(data as RunRow) : null;
     },
-    () => localGetRun(runId),
+    () => localGetRun(runId, ownerKey),
   );
 }
 
-export async function listRecentRuns(limit = 12): Promise<FlowPrRun[]> {
+export async function listRecentRuns(limit = 12, ownerKey?: string): Promise<FlowPrRun[]> {
   return withInsForgeFallback(
     async () => {
       const client = await getInsForgeClient();
-      const { data, error } = await client.database
+      let query = client.database
         .from('qa_runs')
         .select('*')
         .order('created_at', { ascending: false })
         .limit(limit);
+      if (ownerKey) query = query.eq('owner_key', ownerKey);
+      const { data, error } = await query;
       throwIfError(error, 'listRecentRuns');
 
       return Array.isArray(data) ? data.map((row) => mapRun(row as RunRow)) : [];
     },
-    () => localListRecentRuns(limit),
+    () => localListRecentRuns(limit, ownerKey),
+  );
+}
+
+export async function listFlowProfiles(ownerKey: string): Promise<FlowProfile[]> {
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('flow_profiles')
+        .select('*')
+        .eq('owner_key', ownerKey)
+        .order('updated_at', { ascending: false });
+      throwIfError(error, 'listFlowProfiles');
+      return Array.isArray(data) ? data.map((row) => mapFlowProfile(row as FlowProfileRow)) : [];
+    },
+    () => localListFlowProfiles(ownerKey),
+  );
+}
+
+export async function getFlowProfile(ownerKey: string, profileId: string): Promise<FlowProfile | null> {
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('flow_profiles')
+        .select('*')
+        .eq('owner_key', ownerKey)
+        .eq('id', profileId)
+        .maybeSingle();
+      throwIfError(error, 'getFlowProfile');
+      return data ? mapFlowProfile(data as FlowProfileRow) : null;
+    },
+    () => localGetFlowProfile(ownerKey, profileId),
+  );
+}
+
+export async function createFlowProfile(ownerKey: string, input: FlowProfileInput): Promise<FlowProfile> {
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const row = {
+        owner_key: ownerKey,
+        name: input.name,
+        description: input.description ?? null,
+        repo_url: input.repoUrl,
+        preview_url: input.previewUrl,
+        base_branch: input.baseBranch,
+        flow_goal: input.flowGoal,
+        risk_level: input.riskLevel,
+        permission_profile: input.permissionProfile,
+        tags: input.tags ?? [],
+        enabled: input.enabled ?? true,
+      };
+      const { data, error } = await client.database.from('flow_profiles').insert([row]).select('*');
+      throwIfError(error, 'createFlowProfile');
+      return mapFlowProfile(firstRow<FlowProfileRow>(data, 'createFlowProfile'));
+    },
+    () => localCreateFlowProfile(ownerKey, input),
+  );
+}
+
+export async function updateFlowProfile(
+  ownerKey: string,
+  profileId: string,
+  input: Partial<FlowProfileInput>,
+): Promise<FlowProfile> {
+  return withInsForgeFallback(
+    async () => {
+      const update: JsonRecord = {};
+      if (input.name !== undefined) update.name = input.name;
+      if (input.description !== undefined) update.description = input.description;
+      if (input.repoUrl !== undefined) update.repo_url = input.repoUrl;
+      if (input.previewUrl !== undefined) update.preview_url = input.previewUrl;
+      if (input.baseBranch !== undefined) update.base_branch = input.baseBranch;
+      if (input.flowGoal !== undefined) update.flow_goal = input.flowGoal;
+      if (input.riskLevel !== undefined) update.risk_level = input.riskLevel;
+      if (input.permissionProfile !== undefined) update.permission_profile = input.permissionProfile;
+      if (input.tags !== undefined) update.tags = input.tags;
+      if (input.enabled !== undefined) update.enabled = input.enabled;
+      update.updated_at = new Date().toISOString();
+
+      const client = await getInsForgeClient();
+      const { data, error } = await client.database
+        .from('flow_profiles')
+        .update(update)
+        .eq('owner_key', ownerKey)
+        .eq('id', profileId)
+        .select('*');
+      throwIfError(error, 'updateFlowProfile');
+      return mapFlowProfile(firstRow<FlowProfileRow>(data, 'updateFlowProfile'));
+    },
+    () => localUpdateFlowProfile(ownerKey, profileId, input),
+  );
+}
+
+export async function deleteFlowProfile(ownerKey: string, profileId: string): Promise<void> {
+  return withInsForgeFallback(
+    async () => {
+      const client = await getInsForgeClient();
+      const { error } = await client.database
+        .from('flow_profiles')
+        .delete()
+        .eq('owner_key', ownerKey)
+        .eq('id', profileId);
+      throwIfError(error, 'deleteFlowProfile');
+    },
+    () => localDeleteFlowProfile(ownerKey, profileId),
+  );
+}
+
+export async function touchFlowProfile(ownerKey: string, profileId: string): Promise<FlowProfile> {
+  return withInsForgeFallback(
+    async () => {
+      const existing = await getFlowProfile(ownerKey, profileId);
+      if (!existing) throw new Error(`Flow profile not found: ${profileId}`);
+      const client = await getInsForgeClient();
+      const now = new Date().toISOString();
+      const { data, error } = await client.database
+        .from('flow_profiles')
+        .update({ run_count: existing.runCount + 1, last_run_at: now, updated_at: now })
+        .eq('owner_key', ownerKey)
+        .eq('id', profileId)
+        .select('*');
+      throwIfError(error, 'touchFlowProfile');
+      return mapFlowProfile(firstRow<FlowProfileRow>(data, 'touchFlowProfile'));
+    },
+    () => localTouchFlowProfile(ownerKey, profileId),
   );
 }
 
 export async function updateRunStatus(
   runId: string,
   status: RunStatus,
-  options: { failureSummary?: string } = {},
+  options: { failureSummary?: string; clearCompletion?: boolean } = {},
 ): Promise<FlowPrRun> {
   return withInsForgeFallback(
     async () => {
@@ -1144,6 +1368,11 @@ export async function updateRunStatus(
 
       if (options.failureSummary) {
         update.failure_summary = options.failureSummary;
+      }
+
+      if (options.clearCompletion) {
+        update.completed_at = null;
+        if (!options.failureSummary) update.failure_summary = null;
       }
 
       const client = await getInsForgeClient();
@@ -1620,20 +1849,22 @@ export async function recordAgentMemory(input: AgentMemoryInput): Promise<AgentM
   );
 }
 
-export async function listAgentMemories(projectId: string): Promise<AgentMemory[]> {
+export async function listAgentMemories(projectId: string, runId?: string): Promise<AgentMemory[]> {
   return withInsForgeFallback(
     async () => {
       const client = await getInsForgeClient();
-      const { data, error } = await client.database
+      let query = client.database
         .from('agent_memories')
         .select('*')
         .eq('project_id', projectId)
         .order('updated_at', { ascending: false });
+      if (runId) query = query.eq('run_id', runId);
+      const { data, error } = await query;
       throwIfError(error, 'listAgentMemories');
 
       return Array.isArray(data) ? data.map((row) => mapAgentMemory(row as AgentMemoryRow)) : [];
     },
-    () => localListAgentMemories(projectId),
+    () => localListAgentMemories(projectId, runId),
   );
 }
 
@@ -1812,10 +2043,10 @@ export async function listBenchmarkEvaluations(runId: string): Promise<Benchmark
   );
 }
 
-export async function getRunDetail(runId: string): Promise<RunDetail | null> {
+export async function getRunDetail(runId: string, ownerKey?: string): Promise<RunDetail | null> {
   return withInsForgeFallback(
     async () => {
-      const run = await getRun(runId);
+      const run = await getRun(runId, ownerKey);
 
       if (!run) return null;
 
@@ -1841,7 +2072,7 @@ export async function getRunDetail(runId: string): Promise<RunDetail | null> {
         listVerificationResults(runId),
         listPullRequests(runId),
         listPolicyHits(runId),
-        listAgentMemories(run.projectId),
+        listAgentMemories(run.projectId, runId),
         listAgentSessions(runId),
         listActionGates(runId),
         listBenchmarkEvaluations(runId),
@@ -1863,6 +2094,10 @@ export async function getRunDetail(runId: string): Promise<RunDetail | null> {
         benchmarkEvaluations,
       };
     },
-    () => localGetRunDetail(runId),
+    async () => {
+      const detail = await localGetRunDetail(runId);
+      if (!detail || (ownerKey && detail.run.ownerKey !== ownerKey)) return null;
+      return detail;
+    },
   );
 }

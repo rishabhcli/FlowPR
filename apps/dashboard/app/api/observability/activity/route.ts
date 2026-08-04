@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { listRecentRuns, listTimelineEvents } from '@flowpr/tools/insforge';
+import { getOwnerKey } from '@/lib/session';
 import type { FlowPrRun, TimelineEvent } from '@flowpr/schemas';
 
 export const runtime = 'nodejs';
@@ -17,6 +18,9 @@ function shortFlowGoal(goal: string, max = 80): string {
 }
 
 export async function GET(request: Request) {
+  const ownerKey = await getOwnerKey();
+  if (!ownerKey) return NextResponse.json({ error: 'Sign in to view workspace activity.' }, { status: 401 });
+
   const url = new URL(request.url);
   const runWindow = Math.min(
     Math.max(Number.parseInt(url.searchParams.get('runs') ?? '5', 10), 1),
@@ -29,7 +33,7 @@ export async function GET(request: Request) {
 
   let runs: FlowPrRun[] = [];
   try {
-    runs = await listRecentRuns(runWindow);
+    runs = await listRecentRuns(runWindow, ownerKey);
   } catch (error) {
     return NextResponse.json(
       {

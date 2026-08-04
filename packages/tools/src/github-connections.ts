@@ -57,6 +57,10 @@ export interface GitHubConnectionStatus {
   };
 }
 
+export interface GitHubConnectionStatusOptions {
+  userId?: string;
+}
+
 async function createInsForgeServerClient() {
   const { createClient } = await import('@insforge/sdk');
   return createClient({
@@ -231,9 +235,55 @@ export async function getGitHubConnectionForUser(
   return rowToConnection(data as GitHubConnectionRow);
 }
 
-export async function getGitHubConnectionStatus(): Promise<GitHubConnectionStatus> {
+export async function getGitHubConnectionStatus(
+  options: GitHubConnectionStatusOptions = {},
+): Promise<GitHubConnectionStatus> {
   loadLocalEnv();
-  const client = await getInsForgeClient();
+  const userId = options.userId?.trim();
+  const repositoryAccess = hasGitHubCredentials() || hasGitHubAppCredentials()
+    ? 'ready'
+    : 'setup_needed';
+
+  let client: Awaited<ReturnType<typeof getInsForgeClient>>;
+  try {
+    client = await getInsForgeClient();
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return {
+      authProvider: 'setup_needed',
+      repositoryAccess,
+      connectionStore: 'setup_needed',
+      startUrl: '/api/connections/github/start',
+      summaries: {
+        authProvider: 'Configure InsForge before enabling GitHub OAuth sign-in.',
+        repositoryAccess: hasGitHubAppCredentials()
+          ? 'GitHub App credentials are available for repository operations.'
+          : hasGitHubCredentials()
+            ? 'A GitHub token is available for repository operations.'
+            : 'Add GitHub App credentials before FlowPR opens PRs for connected repositories.',
+        connectionStore: `GitHub connection records are unavailable in this runtime: ${reason}`,
+      },
+    };
+  }
+
+  if (!userId) {
+    return {
+      authProvider: 'ready',
+      repositoryAccess,
+      connectionStore: 'setup_needed',
+      startUrl: '/api/connections/github/start',
+      summaries: {
+        authProvider: 'GitHub OAuth is enabled in InsForge for user sign-in.',
+        repositoryAccess: hasGitHubAppCredentials()
+          ? 'GitHub App credentials are available for repository operations.'
+          : hasGitHubCredentials()
+            ? 'A GitHub token is available for repository operations.'
+            : 'Add GitHub App credentials before FlowPR opens PRs for connected repositories.',
+        connectionStore: 'Sign in to inspect the GitHub connection record for this workspace.',
+      },
+    };
+  }
+
   let latestConnection: GitHubConnectionStatus['latestConnection'];
   let connectionCount: number | undefined;
   let connectionStore: GitHubConnectionStatus['connectionStore'] = 'ready';
@@ -244,6 +294,8 @@ export async function getGitHubConnectionStatus(): Promise<GitHubConnectionStatu
       'id, connection_state, updated_at, github_login, github_avatar_url',
       { count: 'exact' },
     )
+    .eq('insforge_user_id', userId)
+    .eq('provider', 'github')
     .order('updated_at', { ascending: false })
     .limit(1);
 
@@ -271,9 +323,7 @@ export async function getGitHubConnectionStatus(): Promise<GitHubConnectionStatu
 
   return {
     authProvider: 'ready',
-    repositoryAccess: hasGitHubCredentials() || hasGitHubAppCredentials()
-      ? 'ready'
-      : 'setup_needed',
+    repositoryAccess,
     connectionStore,
     connectionCount,
     latestConnection,

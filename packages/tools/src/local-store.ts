@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, open, readFile, rename, rm, writeFile, type FileHandle } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
   artifactStorageBucket,
   parseGitHubRepoUrl,
@@ -15,6 +15,8 @@ import {
   type BrowserObservation,
   type BugHypothesis,
   type FlowPrRun,
+  type FlowProfile,
+  type FlowProfileInput,
   type PatchRecord,
   type PullRequestRecord,
   type PullRequestStatus,
@@ -60,6 +62,7 @@ interface LocalStoreData {
   version: 1;
   projects: LocalProject[];
   runs: FlowPrRun[];
+  flowProfiles: LocalFlowProfile[];
   timelineEvents: TimelineEvent[];
   providerArtifacts: ProviderArtifact[];
   browserObservations: BrowserObservation[];
@@ -73,6 +76,12 @@ interface LocalStoreData {
   actionGates: ActionGate[];
   benchmarkEvaluations: BenchmarkEvaluation[];
 }
+
+interface LocalFlowProfile extends FlowProfile {
+  ownerKey: string;
+}
+
+const DEFAULT_LOCAL_OWNER_KEY = 'local-development';
 
 export interface LocalRunArtifactDownloadResult {
   bytes: Uint8Array;
@@ -92,7 +101,7 @@ function repoRoot(startDir = process.cwd()): string {
 }
 
 function workspaceDir(): string {
-  return join(repoRoot(), '.flowpr-workspaces');
+  return process.env.FLOWPR_LOCAL_STORE_DIR?.trim() || join(repoRoot(), '.flowpr-workspaces');
 }
 
 function storePath(): string {
@@ -112,6 +121,7 @@ function emptyStore(): LocalStoreData {
     version: 1,
     projects: [],
     runs: [],
+    flowProfiles: [],
     timelineEvents: [],
     providerArtifacts: [],
     browserObservations: [],
@@ -152,7 +162,12 @@ async function readStoreUnlocked(): Promise<LocalStoreData> {
   try {
     const raw = await readFile(storePath(), 'utf8');
     const parsed = JSON.parse(raw) as Partial<LocalStoreData>;
-    return { ...emptyStore(), ...parsed, version: 1 };
+    const store: LocalStoreData = { ...emptyStore(), ...parsed, version: 1 };
+    store.runs = store.runs.map((run) => ({
+      ...run,
+      ownerKey: run.ownerKey ?? DEFAULT_LOCAL_OWNER_KEY,
+    }));
+    return store;
   } catch (error) {
     const code = typeof error === 'object' && error ? (error as NodeJS.ErrnoException).code : undefined;
     if (code === 'ENOENT') return emptyStore();
@@ -236,6 +251,7 @@ export async function localCreateRun(input: RunStartInput, fallbackReason?: stri
     const project = projectForRun(store, input);
     const run: FlowPrRun = {
       id: randomUUID(),
+      ownerKey: input.ownerKey ?? DEFAULT_LOCAL_OWNER_KEY,
       projectId: project.id,
       repoUrl: input.repoUrl,
       owner: repo.owner,
@@ -330,18 +346,128 @@ export async function localCreateRun(input: RunStartInput, fallbackReason?: stri
   });
 }
 
-export async function localGetRun(runId: string): Promise<FlowPrRun | null> {
-  return readOnly((store) => store.runs.find((run) => run.id === runId) ?? null);
+export async function localGetRun(runId: string, ownerKey?: string): Promise<FlowPrRun | null> {
+  return readOnly((store) => store.runs.find((run) =>
+    run.id === runId && (!ownerKey || run.ownerKey === ownerKey),
+  ) ?? null);
 }
 
-export async function localListRecentRuns(limit = 12): Promise<FlowPrRun[]> {
-  return readOnly((store) => [...store.runs].sort(descendingCreatedAt).slice(0, limit));
+export async function localListRecentRuns(limit = 12, ownerKey?: string): Promise<FlowPrRun[]> {
+  return readOnly((store) => store.runs
+    .filter((run) => !ownerKey || run.ownerKey === ownerKey)
+    .sort(descendingCreatedAt)
+    .slice(0, limit));
+}
+
+function publicFlowProfile(profile: LocalFlowProfile): FlowProfile {
+  const { ownerKey: _ownerKey, ...publicProfile } = profile;
+  return publicProfile;
+}
+
+export async function localListFlowProfiles(ownerKey: string): Promise<FlowProfile[]> {
+  return readOnly((store) =>
+    store.flowProfiles
+      .filter((profile) => profile.ownerKey === ownerKey)
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map(publicFlowProfile),
+  );
+}
+
+export async function localGetFlowProfile(ownerKey: string, profileId: string): Promise<FlowProfile | null> {
+  return readOnly((store) => {
+    const profile = store.flowProfiles.find(
+      (item) => item.ownerKey === ownerKey && item.id === profileId,
+    );
+    return profile ? publicFlowProfile(profile) : null;
+  });
+}
+
+export async function localCreateFlowProfile(
+  ownerKey: string,
+  input: FlowProfileInput,
+): Promise<FlowProfile> {
+  return withStore((store) => {
+    const now = nowIso();
+    const duplicate = store.flowProfiles.find(
+      (profile) => profile.ownerKey === ownerKey && profile.name.toLowerCase() === input.name.toLowerCase(),
+    );
+    if (duplicate) throw new Error(`A flow profile named "${input.name}" already exists`);
+
+    const profile: LocalFlowProfile = {
+      id: randomUUID(),
+      ownerKey,
+      name: input.name,
+      description: input.description,
+      repoUrl: input.repoUrl,
+      previewUrl: input.previewUrl,
+      baseBranch: input.baseBranch,
+      flowGoal: input.flowGoal,
+      riskLevel: input.riskLevel,
+      permissionProfile: input.permissionProfile,
+      tags: input.tags ?? [],
+      enabled: input.enabled ?? true,
+      runCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+    store.flowProfiles.push(profile);
+    return publicFlowProfile(profile);
+  });
+}
+
+export async function localUpdateFlowProfile(
+  ownerKey: string,
+  profileId: string,
+  input: Partial<FlowProfileInput>,
+): Promise<FlowProfile> {
+  return withStore((store) => {
+    const profile = store.flowProfiles.find(
+      (item) => item.ownerKey === ownerKey && item.id === profileId,
+    );
+    if (!profile) throw new Error(`Flow profile not found: ${profileId}`);
+
+    if (input.name !== undefined) profile.name = input.name;
+    if (input.description !== undefined) profile.description = input.description;
+    if (input.repoUrl !== undefined) profile.repoUrl = input.repoUrl;
+    if (input.previewUrl !== undefined) profile.previewUrl = input.previewUrl;
+    if (input.baseBranch !== undefined) profile.baseBranch = input.baseBranch;
+    if (input.flowGoal !== undefined) profile.flowGoal = input.flowGoal;
+    if (input.riskLevel !== undefined) profile.riskLevel = input.riskLevel;
+    if (input.permissionProfile !== undefined) profile.permissionProfile = input.permissionProfile;
+    if (input.tags !== undefined) profile.tags = input.tags;
+    if (input.enabled !== undefined) profile.enabled = input.enabled;
+    profile.updatedAt = nowIso();
+    return publicFlowProfile(profile);
+  });
+}
+
+export async function localDeleteFlowProfile(ownerKey: string, profileId: string): Promise<void> {
+  await withStore((store) => {
+    const index = store.flowProfiles.findIndex(
+      (item) => item.ownerKey === ownerKey && item.id === profileId,
+    );
+    if (index === -1) throw new Error(`Flow profile not found: ${profileId}`);
+    store.flowProfiles.splice(index, 1);
+  });
+}
+
+export async function localTouchFlowProfile(ownerKey: string, profileId: string): Promise<FlowProfile> {
+  return withStore((store) => {
+    const profile = store.flowProfiles.find(
+      (item) => item.ownerKey === ownerKey && item.id === profileId,
+    );
+    if (!profile) throw new Error(`Flow profile not found: ${profileId}`);
+    profile.runCount += 1;
+    profile.lastRunAt = nowIso();
+    profile.updatedAt = profile.lastRunAt;
+    return publicFlowProfile(profile);
+  });
 }
 
 export async function localUpdateRunStatus(
   runId: string,
   status: RunStatus,
-  options: { failureSummary?: string } = {},
+  options: { failureSummary?: string; clearCompletion?: boolean } = {},
 ): Promise<FlowPrRun> {
   return withStore((store) => {
     const run = store.runs.find((item) => item.id === runId);
@@ -349,7 +475,9 @@ export async function localUpdateRunStatus(
     run.status = status;
     run.updatedAt = nowIso();
     if (status === 'done' || status === 'failed') run.completedAt = run.updatedAt;
+    if (options.clearCompletion) run.completedAt = undefined;
     if (options.failureSummary) run.failureSummary = options.failureSummary;
+    if (options.clearCompletion && !options.failureSummary) run.failureSummary = undefined;
     return run;
   });
 }
@@ -599,8 +727,10 @@ export async function localRecordAgentMemory(input: AgentMemoryInput): Promise<A
   });
 }
 
-export async function localListAgentMemories(projectId: string): Promise<AgentMemory[]> {
-  return readOnly((store) => store.agentMemories.filter((memory) => memory.projectId === projectId).sort((a, b) => -byCreatedAt(a, b)));
+export async function localListAgentMemories(projectId: string, runId?: string): Promise<AgentMemory[]> {
+  return readOnly((store) => store.agentMemories
+    .filter((memory) => memory.projectId === projectId && (!runId || memory.runId === runId))
+    .sort((a, b) => -byCreatedAt(a, b)));
 }
 
 export async function localRecordAgentSession(input: AgentSessionInput): Promise<AgentSession> {
@@ -708,7 +838,9 @@ export async function localGetRunDetail(runId: string): Promise<RunDetail | null
       verificationResults: store.verificationResults.filter((result) => result.runId === runId).sort(byCreatedAt),
       pullRequests: store.pullRequests.filter((pullRequest) => pullRequest.runId === runId).sort(byCreatedAt),
       policyHits: store.policyHits.filter((hit) => hit.runId === runId).sort(byCreatedAt),
-      agentMemories: store.agentMemories.filter((memory) => memory.projectId === run.projectId).sort((a, b) => -byCreatedAt(a, b)),
+      agentMemories: store.agentMemories
+        .filter((memory) => memory.projectId === run.projectId && memory.runId === runId)
+        .sort((a, b) => -byCreatedAt(a, b)),
       agentSessions: store.agentSessions.filter((session) => session.runId === runId).sort(byCreatedAt),
       actionGates: store.actionGates.filter((gate) => gate.runId === runId).sort(byCreatedAt),
       benchmarkEvaluations: store.benchmarkEvaluations.filter((evaluation) => evaluation.runId === runId).sort(byCreatedAt),
@@ -746,10 +878,26 @@ export function localArtifactKeyFromUrl(keyOrUrl: string): string {
   return keyOrUrl.startsWith(prefix) ? keyOrUrl.slice(prefix.length) : keyOrUrl;
 }
 
+function artifactPath(keyOrUrl: string): string {
+  const key = localArtifactKeyFromUrl(keyOrUrl);
+  if (!key || key.includes('\0')) {
+    throw new Error('Artifact key is invalid.');
+  }
+
+  const root = resolve(artifactsDir());
+  const candidate = resolve(root, key);
+  const relativePath = relative(root, candidate);
+  if (!relativePath || relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
+    throw new Error('Artifact key must stay inside the artifact directory.');
+  }
+
+  return candidate;
+}
+
 export async function localUploadRunArtifact(input: RunArtifactUploadInput): Promise<RunArtifactUploadResult> {
   const bytes = await bytesFromBody(input.body);
   const key = localArtifactKeyFromUrl(input.key);
-  const path = join(artifactsDir(), key);
+  const path = artifactPath(key);
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, bytes);
   return {
@@ -764,7 +912,7 @@ export async function localUploadRunArtifact(input: RunArtifactUploadInput): Pro
 
 export async function localDownloadRunArtifact(keyOrUrl: string): Promise<LocalRunArtifactDownloadResult> {
   const key = localArtifactKeyFromUrl(keyOrUrl);
-  const bytes = await readFile(join(artifactsDir(), key));
+  const bytes = await readFile(artifactPath(key));
   return {
     bytes: new Uint8Array(bytes),
     contentType: contentTypeForKey(key),

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium, type BrowserContext, type Locator, type Page } from 'playwright';
 import { screenshotStorageKey, traceStorageKey } from '@flowpr/schemas';
+import { loadLocalEnv } from './env';
 import { uploadRunArtifact } from './insforge';
 
 export interface NetworkFailure {
@@ -53,6 +54,12 @@ function flowIncludes(goal: string, patterns: RegExp[]): boolean {
 
 function normalizeBaseUrl(value: string): string {
   return value.replace(/\/+$/, '');
+}
+
+function configuredExecutablePath(): string | undefined {
+  loadLocalEnv();
+  const value = process.env.FLOWPR_PLAYWRIGHT_EXECUTABLE_PATH?.trim();
+  return value || undefined;
 }
 
 function parsedUrl(value: string): URL | undefined {
@@ -359,7 +366,10 @@ async function exerciseFlow(page: Page, input: LocalFlowTestInput): Promise<{
 
 export async function runLocalFlowTest(input: LocalFlowTestInput): Promise<LocalFlowTestResult> {
   const label = input.label ?? 'phase4-local-flow';
-  const browser = await chromium.launch({ headless: true });
+  const executablePath = configuredExecutablePath();
+  const browser = await chromium.launch(
+    executablePath ? { headless: true, executablePath } : { headless: true },
+  );
   const context = await browser.newContext({
     viewport: { width: 390, height: 844 },
     deviceScaleFactor: 2,

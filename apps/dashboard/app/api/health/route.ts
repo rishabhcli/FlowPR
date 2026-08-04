@@ -72,8 +72,12 @@ export async function GET() {
           ? 'local_artifact'
           : 'missing',
     akash: envFlag('AKASH_API_KEY'),
-    shipables: existsSync(join(repoRoot, 'skills', 'flowpr-autonomous-frontend-qa', 'shipables.json')) ? 'configured' : 'missing',
-    chainguard: existsSync(join(repoRoot, 'Dockerfile')) ? 'configured' : 'missing',
+    shipables: existsSync(join(repoRoot, 'skills', 'flowpr-autonomous-frontend-qa', 'shipables.json'))
+      ? process.env.SHIPABLES_API_KEY
+        ? 'configured'
+        : 'local_artifact'
+      : 'missing',
+    chainguard: existsSync(join(repoRoot, 'Dockerfile')) ? 'local_artifact' : 'missing',
   };
 
   let sponsorStatuses: Awaited<ReturnType<typeof checkSponsorStatuses>> = [];
@@ -86,6 +90,11 @@ export async function GET() {
   }
 
   return NextResponse.json({
+    runtime: {
+      dataMode: process.env.FLOWPR_DATA_MODE === 'local' ? 'local' : 'insforge',
+      localSessionEnabled: process.env.FLOWPR_ALLOW_LOCAL_SESSION === 'true' && process.env.NODE_ENV !== 'production',
+      durableStore: process.env.FLOWPR_DATA_MODE === 'local' ? 'local-store' : 'insforge',
+    },
     envReadiness,
     sponsorStatuses,
     sponsorError,

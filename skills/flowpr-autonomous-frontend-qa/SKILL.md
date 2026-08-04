@@ -41,6 +41,7 @@ Use this skill when a coding agent must verify a frontend flow, collect browser 
 8. Create a PR only when the configured Guild.ai gate allows it; otherwise produce a human handoff report.
 9. Include before/after screenshots or honest local-proof fallback plus verification in the PR body or handoff report.
 10. Stop before PR creation if the Guild.ai gate denies the action.
+11. Use the seeded demo patcher only for the FlowPR local mobile cookie-banner demo; arbitrary repositories require a repository-specific patcher or a human handoff.
 
 ## Inputs
 

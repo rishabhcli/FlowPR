@@ -29,6 +29,7 @@ import {
   computePhaseDurations,
   formatDurationShort,
 } from '@/lib/phase-durations';
+import { selectLocalVerification } from '@/lib/verification';
 
 import { PhaseStepper } from '@/components/flowpr/phase-stepper';
 import { StateBadge } from '@/components/flowpr/state-badge';
@@ -96,9 +97,7 @@ export function RunPulse({
   const liveVerification = detail.verificationResults.find(
     (result) => result.provider === 'tinyfish-live',
   );
-  const localVerification = detail.verificationResults.find(
-    (result) => result.provider === 'local',
-  );
+  const localVerification = selectLocalVerification(detail.verificationResults);
 
   const tinyfishLive = liveStreams.find((entry) => entry.provider === 'tinyfish');
   const liveActive = Boolean(tinyfishLive);

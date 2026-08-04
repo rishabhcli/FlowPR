@@ -18,6 +18,7 @@
     "demo:preflight": "tsx scripts/demo-preflight.ts",
     "run:replay": "tsx scripts/run-replay.ts",
     "evidence:integrity": "tsx scripts/evidence-integrity-smoke.ts",
+    "test:unit": "tsx --test scripts/tests/*.test.ts",
     "pr:packet-smoke": "tsx scripts/pr-evidence-packet-smoke.ts",
     "recovery:smoke": "tsx scripts/recovery-visibility-smoke.ts",
     "phase4:checkout-test": "pnpm --filter @flowpr/demo-target test:checkout",

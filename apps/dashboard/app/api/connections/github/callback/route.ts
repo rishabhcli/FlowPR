@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { completeGitHubOAuth } from '@flowpr/tools/github-connections';
+import { createSessionValue, FLOWPR_SESSION_COOKIE } from '@/lib/session';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -64,7 +65,7 @@ export async function GET(request: Request) {
     });
     const response = NextResponse.redirect(getRedirectUrl(request, 'connected'));
     clearOAuthCookies(response);
-    response.cookies.set('flowpr_session', connection.userId, {
+    response.cookies.set(FLOWPR_SESSION_COOKIE, createSessionValue(connection.userId), {
       httpOnly: true,
       maxAge: 60 * 60 * 24 * 30,
       path: '/',

@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { runCommand, type CommandResult } from '@flowpr/tools/repo';
 
@@ -29,6 +31,55 @@ export interface LocalVerificationResult {
   overallStatus: VerificationStatus;
   steps: VerificationOutcome[];
   summary: string;
+}
+
+const SAFE_VERIFICATION_ENV_KEYS = new Set([
+  'CI',
+  'FORCE_COLOR',
+  'HOME',
+  'LANG',
+  'LANGUAGE',
+  'LOGNAME',
+  'NODE_ENV',
+  'NO_COLOR',
+  'PATH',
+  'SHELL',
+  'TERM',
+  'TZ',
+  'USER',
+  'DEMO_TARGET_PORT',
+  'DEMO_TARGET_URL',
+  'FLOWPR_PLAYWRIGHT_EXECUTABLE_PATH',
+  'NEXT_TELEMETRY_DISABLED',
+  'PLAYWRIGHT_BROWSERS_PATH',
+  'PLAYWRIGHT_RUN_LABEL',
+  'PORT',
+]);
+
+function isSafeVerificationEnvKey(key: string): boolean {
+  return SAFE_VERIFICATION_ENV_KEYS.has(key) || key.startsWith('LC_');
+}
+
+export function buildVerificationEnv(
+  overrides: Record<string, string | undefined> = {},
+  source: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+
+  for (const key of SAFE_VERIFICATION_ENV_KEYS) {
+    const value = source[key];
+    if (value !== undefined) env[key] = value;
+  }
+
+  for (const [key, value] of Object.entries(source)) {
+    if (key.startsWith('LC_') && value !== undefined) env[key] = value;
+  }
+
+  for (const [key, value] of Object.entries(overrides)) {
+    if (isSafeVerificationEnvKey(key) && value !== undefined) env[key] = value;
+  }
+
+  return env;
 }
 
 function excerpt(value: string, length = 1200): string {
@@ -82,7 +133,7 @@ async function recordStep(
   argv: string[],
   dir: string,
   timeoutMs: number,
-  env?: Record<string, string | undefined>,
+  env: Record<string, string>,
 ): Promise<VerificationOutcome> {
   const result = await runCommand(argv, { cwd: dir, timeoutMs, env });
   return toOutcome(step, result);
@@ -176,15 +227,30 @@ async function sleep(ms: number): Promise<void> {
 async function startNextDevServer(
   packageDir: string,
   port: string,
+  env: Record<string, string>,
 ): Promise<{ url: string; logs: () => string; stop: () => Promise<void> } | { error: string }> {
   const url = `http://127.0.0.1:${port}`;
+
+  try {
+    const response = await fetch(url, {
+      method: 'HEAD',
+      signal: AbortSignal.timeout(1_000),
+    });
+
+    return {
+      error: `Verification port ${port} is already serving HTTP ${response.status}; refusing to test an unowned server.`,
+    };
+  } catch {
+    // A refused connection means the verifier owns the next server it starts.
+  }
+
   let output = '';
   let exited = false;
   let exitSummary = '';
   const child = spawn('pnpm', ['exec', 'next', 'dev', '--hostname', '127.0.0.1', '--port', port], {
     cwd: packageDir,
     detached: true,
-    env: { ...process.env, PORT: port },
+    env: { ...env, PORT: port },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -195,6 +261,10 @@ async function startNextDevServer(
   });
   child.stderr.on('data', (chunk: string) => {
     output = appendBounded(output, chunk);
+  });
+  child.on('error', (error) => {
+    exited = true;
+    exitSummary = `Next dev server could not start: ${error.message}.`;
   });
   child.on('exit', (code, signal) => {
     exited = true;
@@ -255,6 +325,7 @@ async function startNextDevServer(
 async function recordTargetedE2E(
   repoDir: string,
   targetedTestPath: string,
+  env: Record<string, string>,
 ): Promise<VerificationOutcome> {
   const testPath = normalizeRelativePath(targetedTestPath);
   const command = `pnpm exec playwright test --config playwright.config.ts ${testPath ?? targetedTestPath} --workers=1`;
@@ -277,7 +348,7 @@ async function recordTargetedE2E(
   const port = testPortForDir(repoDir);
 
   if (packageUsesNext(packageDir)) {
-    const server = await startNextDevServer(packageDir, port);
+    const server = await startNextDevServer(packageDir, port, env);
 
     if ('error' in server) {
       return failStep('e2e', `pnpm exec next dev --hostname 127.0.0.1 --port ${port}`, server.error);
@@ -289,10 +360,10 @@ async function recordTargetedE2E(
         ['pnpm', 'exec', 'playwright', 'test', '--config', 'playwright.config.ts', relativeTestPath, '--workers=1'],
         packageDir,
         300_000,
-        {
+        buildVerificationEnv({
           DEMO_TARGET_URL: server.url,
           PLAYWRIGHT_RUN_LABEL: 'regression',
-        },
+        }, env),
       );
     } finally {
       await server.stop();
@@ -304,10 +375,10 @@ async function recordTargetedE2E(
     ['pnpm', 'exec', 'playwright', 'test', '--config', 'playwright.config.ts', relativeTestPath, '--workers=1'],
     packageDir,
     300_000,
-    {
+    buildVerificationEnv({
       DEMO_TARGET_PORT: port,
       PLAYWRIGHT_RUN_LABEL: 'regression',
-    },
+    }, env),
   );
 }
 
@@ -342,7 +413,10 @@ function summarize(steps: VerificationOutcome[]): { overallStatus: VerificationS
   };
 }
 
-export async function runLocalVerification(input: LocalVerificationInput): Promise<LocalVerificationResult> {
+async function runLocalVerificationWithEnv(
+  input: LocalVerificationInput,
+  env: Record<string, string>,
+): Promise<LocalVerificationResult> {
   const steps: VerificationOutcome[] = [];
 
   if (input.installDependencies) {
@@ -353,6 +427,7 @@ export async function runLocalVerification(input: LocalVerificationInput): Promi
         const install = await runCommand(['pnpm', 'install', '--frozen-lockfile', '--prefer-offline'], {
           cwd: input.dir,
           timeoutMs: 300_000,
+          env,
         });
 
         steps.push({
@@ -393,7 +468,7 @@ export async function runLocalVerification(input: LocalVerificationInput): Promi
   }
 
   if (hasPackageScript(input.dir, 'typecheck')) {
-    steps.push(await recordStep('typecheck', ['pnpm', 'typecheck'], input.dir, 300_000));
+    steps.push(await recordStep('typecheck', ['pnpm', 'typecheck'], input.dir, 300_000, env));
   } else {
     steps.push(skipStep('typecheck', 'pnpm typecheck', 'No typecheck script declared.'));
   }
@@ -406,7 +481,7 @@ export async function runLocalVerification(input: LocalVerificationInput): Promi
   }
 
   if (input.targetedTestPath) {
-    steps.push(await recordTargetedE2E(input.dir, input.targetedTestPath));
+    steps.push(await recordTargetedE2E(input.dir, input.targetedTestPath, env));
     return { dir: input.dir, steps, ...summarize(steps) };
   }
 
@@ -415,16 +490,27 @@ export async function runLocalVerification(input: LocalVerificationInput): Promi
   }
 
   if (hasPackageScript(input.dir, 'lint')) {
-    steps.push(await recordStep('lint', ['pnpm', 'lint'], input.dir, 300_000));
+    steps.push(await recordStep('lint', ['pnpm', 'lint'], input.dir, 300_000, env));
   } else {
     steps.push(skipStep('lint', 'pnpm lint', 'No lint script declared.'));
   }
 
   if (hasPackageScript(input.dir, 'test')) {
-    steps.push(await recordStep('unit', ['pnpm', 'test', '--if-present'], input.dir, 300_000));
+    steps.push(await recordStep('unit', ['pnpm', 'test', '--if-present'], input.dir, 300_000, env));
   } else {
     steps.push(skipStep('unit', 'pnpm test --if-present', 'No test script declared.'));
   }
 
   return { dir: input.dir, steps, ...summarize(steps) };
+}
+
+export async function runLocalVerification(input: LocalVerificationInput): Promise<LocalVerificationResult> {
+  const verificationHome = await mkdtemp(join(tmpdir(), 'flowpr-verification-home-'));
+  const env = buildVerificationEnv({ HOME: verificationHome });
+
+  try {
+    return await runLocalVerificationWithEnv(input, env);
+  } finally {
+    await rm(verificationHome, { recursive: true, force: true });
+  }
 }
